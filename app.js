@@ -14,6 +14,8 @@ const state = {
 };
 
 let sqlJs = null;     // sql.js SQL namespace
+const BACKEND = 'http://localhost:3000';
+let backendAvailable = false;
 
 // ── Colors ─────────────────────────────────────────────────
 const TYPE_COLOR = {
@@ -37,6 +39,7 @@ function uid() { return 'src_' + (++_uid); }
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
   initSqlJs();
+  checkBackend();
   loadFromStorage();
   renderAll();
 
@@ -53,11 +56,11 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('sqliteFileInput').addEventListener('change', e => handleSqliteFiles(e));
   document.getElementById('excelFileInput').addEventListener('change', e => handleExcelFiles(e));
 
-  // Access button: show modal first if .mdb/.accdb might be selected
+  // Access button: open file picker directly (backend handles .mdb/.accdb)
   const accessBtn = document.getElementById('accessBtn');
   accessBtn.onclick = null; // remove inline
   accessBtn.addEventListener('click', () => {
-    document.getElementById('accessModal').style.display = 'flex';
+    document.getElementById('accessFileInput').click();
   });
 
   // Clear all
@@ -66,6 +69,24 @@ document.addEventListener('DOMContentLoaded', () => {
   // Theme
   document.getElementById('themeToggle').addEventListener('click', toggleTheme);
 });
+
+// ── Backend health check ─────────────────────────────────────
+async function checkBackend() {
+  try {
+    const r = await fetch(`${BACKEND}/api/health`, { signal: AbortSignal.timeout(2000) });
+    backendAvailable = r.ok;
+  } catch {
+    backendAvailable = false;
+  }
+  updateAccessBtnTitle();
+}
+
+function updateAccessBtnTitle() {
+  const btn = document.getElementById('accessBtn');
+  btn.title = backendAvailable
+    ? 'استيراد ملف Access (.mdb / .accdb)'
+    : 'الخادم غير متاح — شغّل: npm start';
+}
 
 // ── sql.js init ─────────────────────────────────────────────
 function initSqlJs() {
@@ -103,21 +124,49 @@ function applyTheme(t) {
 // ═══════════════════════════════════════════════════════════
 //  ACCESS FILE HANDLER
 // ═══════════════════════════════════════════════════════════
-function handleAccessFiles(e) {
+async function handleAccessFiles(e) {
   const files = Array.from(e.target.files);
   if (!files.length) return;
   e.target.value = '';
 
-  const supported = files.filter(f => /\.(csv)$/i.test(f.name));
-  const unsupported = files.filter(f => /\.(mdb|accdb)$/i.test(f.name));
+  const nativeFiles = files.filter(f => /\.(mdb|accdb)$/i.test(f.name));
+  const csvFiles    = files.filter(f => /\.csv$/i.test(f.name));
 
-  if (unsupported.length) {
-    notify(`ملفات .mdb/.accdb غير مدعومة في المتصفح. صدّر البيانات إلى CSV أولاً.`, 'warning', 5000);
+  // CSV exports from Access → parsed directly in the browser
+  csvFiles.forEach(file => parseExcelFile(file, 'access'));
+
+  // Native Access files → upload to Node.js backend
+  if (!nativeFiles.length) return;
+
+  // Re-check backend availability before attempting upload
+  await checkBackend();
+
+  if (!backendAvailable) {
+    document.getElementById('accessModal').style.display = 'flex';
+    return;
   }
 
-  if (!supported.length) return;
+  for (const file of nativeFiles) {
+    showLoading();
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
 
-  supported.forEach(file => parseExcelFile(file, 'access'));
+      const res = await fetch(`${BACKEND}/api/access`, { method: 'POST', body: formData });
+      const json = await res.json();
+
+      if (!res.ok) {
+        notify(`خطأ في "${file.name}": ${json.error || res.statusText}`, 'error', 6000);
+        hideLoading();
+        continue;
+      }
+
+      addSource({ name: json.name, type: 'access', tables: json.tables, totalRows: json.totalRows });
+    } catch (err) {
+      notify(`تعذّر الاتصال بالخادم أثناء معالجة "${file.name}": ${err.message}`, 'error', 6000);
+    }
+    hideLoading();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════

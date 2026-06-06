@@ -70,7 +70,7 @@
             <span class="btn-plus">+</span>
             <span class="record-badge access-badge" id="accessBadge" style="display:none"></span>
           </button>
-          <input type="file" id="accessFileInput" accept=".mdb,.accdb,.csv" style="display:none" multiple />
+          <input type="file" id="accessFileInput" accept=".mdb,.accdb,.csv" style="display:none" />
           <div class="source-chips" id="accessChips"></div>
         </div>
 
@@ -189,11 +189,11 @@
     </section>
   </main>
 
-  <!-- Access help modal -->
+  <!-- Backend offline modal (shown when server is unreachable) -->
   <div class="modal-overlay" id="accessModal" style="display:none">
     <div class="modal">
       <div class="modal-header">
-        <h3>استيراد ملفات Access</h3>
+        <h3>الخادم غير متاح</h3>
         <button class="modal-close" onclick="closeAccessModal()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
             <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
@@ -207,18 +207,19 @@
             <path d="M8 21h8M12 17v4"/>
           </svg>
         </div>
-        <p class="modal-info">ملفات Access (<code>.mdb</code> / <code>.accdb</code>) لا يمكن قراءتها مباشرةً في المتصفح.</p>
+        <p class="modal-info">
+          لقراءة ملفات <code>.mdb</code> / <code>.accdb</code> مباشرةً يجب تشغيل الخادم المحلي.
+        </p>
         <div class="modal-steps">
-          <h4>الحل: صدّر البيانات من Access إلى CSV أو Excel</h4>
+          <h4>تشغيل الخادم (مرة واحدة فقط)</h4>
           <ol>
-            <li>افتح قاعدة البيانات في Microsoft Access</li>
-            <li>اختر الجدول الذي تريد تصديره</li>
-            <li>اذهب إلى: <strong>External Data → Export → Excel / Text File</strong></li>
-            <li>احفظ الملف كـ <code>.xlsx</code> أو <code>.csv</code></li>
-            <li>ارجع هنا واستورده عبر زر <strong>Excel +</strong></li>
+            <li>افتح الطرفية في مجلد المشروع</li>
+            <li>نفّذ: <code>npm install</code></li>
+            <li>ثم نفّذ: <code>npm start</code></li>
+            <li>أعد فتح الصفحة وجرّب مجدداً</li>
           </ol>
         </div>
-        <p class="modal-alt">أو يمكنك استيراد ملف CSV مُصدَّر من Access مباشرةً عبر هذا الزر:</p>
+        <p class="modal-alt">بديلاً، يمكنك استيراد ملف CSV مُصدَّر من Access:</p>
         <button class="btn-import-csv" onclick="closeAccessModal(); document.getElementById('accessFileInput').click()">
           استيراد CSV من Access
         </button>
