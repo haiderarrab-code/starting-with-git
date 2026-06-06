@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>نظام البحث الموحّد في قواعد البيانات</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+
+  <!-- SheetJS for Excel/CSV -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <!-- sql.js for SQLite -->
+  <script src="https://cdn.jsdelivr.net/npm/sql.js@1.10.2/dist/sql-wasm.js"></script>
+</head>
+<body>
+  <!-- ===== HEADER ===== -->
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="header-brand">
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <ellipse cx="12" cy="5" rx="9" ry="3"/>
+            <path d="M3 5v4c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/>
+            <path d="M3 9v4c0 1.66 4.03 3 9 3s9-1.34 9-3V9"/>
+            <path d="M3 13v4c0 1.66 4.03 3 9 3s9-1.34 9-3v-4"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="brand-title">نظام البحث الموحّد</h1>
+          <p class="brand-sub">في قواعد البيانات</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="btn-theme" id="themeToggle" title="تبديل المظهر">
+          <span class="theme-icon">🌙</span>
+        </button>
+        <button class="btn-clear-all" id="clearAllBtn" title="مسح كل البيانات">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+            <polyline points="3 6 5 6 21 6"/>
+            <path d="M19 6l-1 14H6L5 6"/>
+            <path d="M10 11v6M14 11v6"/>
+            <path d="M9 6V4h6v2"/>
+          </svg>
+          مسح الكل
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ===== MAIN ===== -->
+  <main class="app-main">
+
+    <!-- Import Zone -->
+    <section class="import-section">
+      <div class="import-subtitle">استورد • ادمج • ابحث — يتم حفظ البيانات تلقائياً</div>
+      <div class="import-buttons">
+
+        <!-- Access -->
+        <div class="import-card access-card">
+          <button class="import-btn access-btn" id="accessBtn" onclick="document.getElementById('accessFileInput').click()">
+            <span class="btn-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
+                <rect x="2" y="3" width="20" height="14" rx="2"/>
+                <path d="M8 21h8M12 17v4"/>
+              </svg>
+            </span>
+            <span class="btn-label">Access</span>
+            <span class="btn-plus">+</span>
+            <span class="record-badge access-badge" id="accessBadge" style="display:none"></span>
+          </button>
+          <input type="file" id="accessFileInput" accept=".mdb,.accdb,.csv" style="display:none" multiple />
+          <div class="source-chips" id="accessChips"></div>
+        </div>
+
+        <!-- SQLite -->
+        <div class="import-card sqlite-card">
+          <button class="import-btn sqlite-btn" id="sqliteBtn" onclick="document.getElementById('sqliteFileInput').click()">
+            <span class="btn-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
+                <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                <path d="M3 5v4c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/>
+                <path d="M3 9v4c0 1.66 4.03 3 9 3s9-1.34 9-3V9"/>
+                <path d="M3 13v4c0 1.66 4.03 3 9 3s9-1.34 9-3v-4"/>
+              </svg>
+            </span>
+            <span class="btn-label">SQLite</span>
+            <span class="btn-plus">+</span>
+            <span class="record-badge sqlite-badge" id="sqliteBadge" style="display:none"></span>
+          </button>
+          <input type="file" id="sqliteFileInput" accept=".db,.sqlite,.sqlite3" style="display:none" multiple />
+          <div class="source-chips" id="sqliteChips"></div>
+        </div>
+
+        <!-- Excel -->
+        <div class="import-card excel-card">
+          <button class="import-btn excel-btn" id="excelBtn" onclick="document.getElementById('excelFileInput').click()">
+            <span class="btn-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+                <line x1="8" y1="13" x2="16" y2="13"/>
+                <line x1="8" y1="17" x2="16" y2="17"/>
+                <polyline points="10 9 9 9 8 9"/>
+              </svg>
+            </span>
+            <span class="btn-label">Excel</span>
+            <span class="btn-plus">+</span>
+            <span class="record-badge excel-badge" id="excelBadge" style="display:none"></span>
+          </button>
+          <input type="file" id="excelFileInput" accept=".xlsx,.xls,.csv" style="display:none" multiple />
+          <div class="source-chips" id="excelChips"></div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Stats Bar -->
+    <div class="stats-bar" id="statsBar" style="display:none">
+      <div class="stat-item">
+        <span class="stat-num" id="totalSources">0</span>
+        <span class="stat-label">مصدر</span>
+      </div>
+      <div class="stat-divider"></div>
+      <div class="stat-item">
+        <span class="stat-num" id="totalTables">0</span>
+        <span class="stat-label">جدول</span>
+      </div>
+      <div class="stat-divider"></div>
+      <div class="stat-item">
+        <span class="stat-num" id="totalRecords">0</span>
+        <span class="stat-label">سجل</span>
+      </div>
+    </div>
+
+    <!-- Search Zone -->
+    <section class="search-section" id="searchSection" style="display:none">
+      <div class="search-box">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <input
+          type="text"
+          id="searchInput"
+          class="search-input"
+          placeholder="ابحث في جميع المصادر..."
+          autocomplete="off"
+        />
+        <button class="search-clear" id="searchClear" style="display:none" onclick="clearSearch()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="search-filters" id="searchFilters"></div>
+    </section>
+
+    <!-- Notifications -->
+    <div id="notification" class="notification" style="display:none"></div>
+
+    <!-- Content Area -->
+    <section class="content-area" id="contentArea">
+
+      <!-- Empty state -->
+      <div class="empty-state" id="emptyState">
+        <div class="empty-icon">
+          <svg viewBox="0 0 80 80" fill="none">
+            <circle cx="40" cy="40" r="38" stroke="currentColor" stroke-width="2" stroke-dasharray="6 4" opacity="0.3"/>
+            <ellipse cx="40" cy="30" rx="16" ry="5" stroke="currentColor" stroke-width="2" opacity="0.5"/>
+            <path d="M24 30v6c0 2.76 7.16 5 16 5s16-2.24 16-5v-6" stroke="currentColor" stroke-width="2" opacity="0.5"/>
+            <path d="M24 36v6c0 2.76 7.16 5 16 5s16-2.24 16-5v-6" stroke="currentColor" stroke-width="2" opacity="0.5"/>
+            <path d="M33 55l-6 8M47 55l6 8" stroke="currentColor" stroke-width="2" opacity="0.3"/>
+          </svg>
+        </div>
+        <h3 class="empty-title">لا توجد بيانات بعد</h3>
+        <p class="empty-desc">استورد ملفات Access أو SQLite أو Excel للبدء في البحث الموحّد</p>
+      </div>
+
+      <!-- Results / Preview -->
+      <div id="dataArea" style="display:none">
+        <!-- Tabs -->
+        <div class="tabs-bar" id="tabsBar"></div>
+        <!-- Tab content -->
+        <div id="tabContent"></div>
+      </div>
+
+    </section>
+  </main>
+
+  <!-- Access help modal -->
+  <div class="modal-overlay" id="accessModal" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>استيراد ملفات Access</h3>
+        <button class="modal-close" onclick="closeAccessModal()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-icon access-icon-lg">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48">
+            <rect x="2" y="3" width="20" height="14" rx="2"/>
+            <path d="M8 21h8M12 17v4"/>
+          </svg>
+        </div>
+        <p class="modal-info">ملفات Access (<code>.mdb</code> / <code>.accdb</code>) لا يمكن قراءتها مباشرةً في المتصفح.</p>
+        <div class="modal-steps">
+          <h4>الحل: صدّر البيانات من Access إلى CSV أو Excel</h4>
+          <ol>
+            <li>افتح قاعدة البيانات في Microsoft Access</li>
+            <li>اختر الجدول الذي تريد تصديره</li>
+            <li>اذهب إلى: <strong>External Data → Export → Excel / Text File</strong></li>
+            <li>احفظ الملف كـ <code>.xlsx</code> أو <code>.csv</code></li>
+            <li>ارجع هنا واستورده عبر زر <strong>Excel +</strong></li>
+          </ol>
+        </div>
+        <p class="modal-alt">أو يمكنك استيراد ملف CSV مُصدَّر من Access مباشرةً عبر هذا الزر:</p>
+        <button class="btn-import-csv" onclick="closeAccessModal(); document.getElementById('accessFileInput').click()">
+          استيراد CSV من Access
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
