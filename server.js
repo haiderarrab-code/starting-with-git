@@ -8,9 +8,6 @@ const MDBReader = require('mdb-reader');
 const app    = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
 
-// Serve the static front-end from the same directory
-app.use(express.static(path.join(__dirname)));
-
 // Allow cross-origin requests from file:// or other origins during development
 app.use((_req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -82,6 +79,10 @@ app.post('/api/access', upload.single('file'), (req, res) => {
 
 // ── Health check ────────────────────────────────────────────
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
+
+// Serve the static front-end — registered AFTER API routes so Express
+// never intercepts API requests with the static file handler.
+app.use(express.static(path.join(__dirname)));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

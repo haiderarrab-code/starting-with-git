@@ -152,8 +152,21 @@ async function handleAccessFiles(e) {
       const formData = new FormData();
       formData.append('file', file);
 
-      const res = await fetch(`${BACKEND}/api/access`, { method: 'POST', body: formData });
-      const json = await res.json();
+      const res  = await fetch(`${BACKEND}/api/access`, { method: 'POST', body: formData });
+      const text = await res.text();
+
+      let json;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        // Server returned non-JSON (e.g. HTML error page from a proxy)
+        notify(
+          `استجابة غير متوقعة من الخادم أثناء معالجة "${file.name}". تأكد أن npm start يعمل على المنفذ 3000.`,
+          'error', 7000
+        );
+        hideLoading();
+        continue;
+      }
 
       if (!res.ok) {
         notify(`خطأ في "${file.name}": ${json.error || res.statusText}`, 'error', 6000);
@@ -163,7 +176,13 @@ async function handleAccessFiles(e) {
 
       addSource({ name: json.name, type: 'access', tables: json.tables, totalRows: json.totalRows });
     } catch (err) {
-      notify(`تعذّر الاتصال بالخادم أثناء معالجة "${file.name}": ${err.message}`, 'error', 6000);
+      // Network-level failure (server not running, CORS, etc.)
+      backendAvailable = false;
+      updateAccessBtnTitle();
+      notify(
+        `تعذّر الاتصال بالخادم أثناء معالجة "${file.name}". شغّل: npm start`,
+        'error', 7000
+      );
     }
     hideLoading();
   }
