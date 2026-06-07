@@ -3,7 +3,7 @@
 const express = require('express');
 const multer  = require('multer');
 const path    = require('path');
-const MDBReader = require('mdb-reader');
+const MDBReader = require('mdb-reader').default;
 
 const app    = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
@@ -83,6 +83,12 @@ app.get('/api/health', (_req, res) => res.json({ ok: true }));
 // Serve the static front-end — registered AFTER API routes so Express
 // never intercepts API requests with the static file handler.
 app.use(express.static(path.join(__dirname)));
+
+// Global error handler — always returns JSON so the browser never sees HTML
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  res.status(err.status || 500).json({ error: err.message || 'خطأ داخلي في الخادم' });
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
