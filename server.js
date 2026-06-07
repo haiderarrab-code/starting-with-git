@@ -52,15 +52,24 @@ app.post('/api/access', upload.single('file'), (req, res) => {
 
   let tableNames;
   try {
+    // Try without system-table filter first; fall back to including them
     tableNames = reader.getTableNames({ includeSystemTables: false });
+    if (!tableNames.length) {
+      const all = reader.getTableNames({ includeSystemTables: true });
+      // Keep only non-MSys tables
+      tableNames = all.filter(n => !n.startsWith('MSys') && !n.startsWith('USys') && !n.startsWith('~'));
+    }
   } catch (err) {
     cleanup();
     return res.status(422).json({ error: `تعذّر قراءة أسماء الجداول: ${err.message}` });
   }
 
   if (!tableNames.length) {
+    const allNames = reader.getTableNames({ includeSystemTables: true });
     cleanup();
-    return res.status(422).json({ error: 'لا توجد جداول في قاعدة البيانات.' });
+    return res.status(422).json({
+      error: `لا توجد جداول قابلة للقراءة. الجداول الموجودة (${allNames.length}): ${allNames.join(', ') || 'لا شيء'}`,
+    });
   }
 
   const tables = [];
