@@ -15,7 +15,7 @@ const upload = multer({
     destination: os.tmpdir(),
     filename: (_req, file, cb) => cb(null, `mdb_upload_${Date.now()}_${file.originalname}`),
   }),
-  limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2 GB
+  // No file size limit
 });
 
 // Allow cross-origin requests from file:// or other origins during development
