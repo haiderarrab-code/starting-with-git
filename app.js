@@ -152,6 +152,7 @@ async function handleAccessFiles(e) {
       const formData = new FormData();
       formData.append('file', file);
 
+      notify(`جاري رفع ومعالجة "${file.name}"... قد يستغرق بعض الوقت للملفات الكبيرة`, 'info', 30000);
       const res  = await fetch(`${BACKEND}/api/access`, { method: 'POST', body: formData });
       const text = await res.text();
 

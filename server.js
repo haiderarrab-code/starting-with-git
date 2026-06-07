@@ -3,10 +3,20 @@
 const express = require('express');
 const multer  = require('multer');
 const path    = require('path');
+const fs      = require('fs');
+const os      = require('os');
 const MDBReader = require('mdb-reader').default;
 
-const app    = express();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
+const app = express();
+
+// Use disk storage so large files don't blow out RAM
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: os.tmpdir(),
+    filename: (_req, file, cb) => cb(null, `mdb_upload_${Date.now()}_${file.originalname}`),
+  }),
+  limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2 GB
+});
 
 // Allow cross-origin requests from file:// or other origins during development
 app.use((_req, res, next) => {
@@ -26,10 +36,15 @@ app.post('/api/access', upload.single('file'), (req, res) => {
     return res.status(400).json({ error: 'نوع الملف غير مدعوم. يُقبل .mdb و .accdb فقط.' });
   }
 
+  const tmpPath = req.file.path;
+  const cleanup = () => { try { fs.unlinkSync(tmpPath); } catch {} };
+
   let reader;
   try {
-    reader = new MDBReader(req.file.buffer);
+    const buffer = fs.readFileSync(tmpPath);
+    reader = new MDBReader(buffer);
   } catch (err) {
+    cleanup();
     return res.status(422).json({
       error: `تعذّر فتح الملف — قد يكون تالفاً أو بصيغة غير مدعومة: ${err.message}`,
     });
@@ -39,10 +54,12 @@ app.post('/api/access', upload.single('file'), (req, res) => {
   try {
     tableNames = reader.getTableNames({ includeSystemTables: false });
   } catch (err) {
+    cleanup();
     return res.status(422).json({ error: `تعذّر قراءة أسماء الجداول: ${err.message}` });
   }
 
   if (!tableNames.length) {
+    cleanup();
     return res.status(422).json({ error: 'لا توجد جداول في قاعدة البيانات.' });
   }
 
@@ -51,15 +68,14 @@ app.post('/api/access', upload.single('file'), (req, res) => {
     try {
       const table   = reader.getTable(name);
       const columns = table.getColumnNames();
-      // getData() returns an array of plain objects keyed by column name
       const rawRows = table.getData({ rowLimit: 5000 });
 
       const rows = rawRows.map(r => {
         const obj = {};
         for (const col of columns) {
           const val = r[col];
-          if (val == null)              obj[col] = '';
-          else if (val instanceof Date) obj[col] = val.toISOString();
+          if (val == null)               obj[col] = '';
+          else if (val instanceof Date)  obj[col] = val.toISOString();
           else if (Buffer.isBuffer(val)) obj[col] = `[Binary ${val.length}B]`;
           else                           obj[col] = String(val);
         }
@@ -68,10 +84,11 @@ app.post('/api/access', upload.single('file'), (req, res) => {
 
       if (columns.length) tables.push({ name, columns, rows });
     } catch (err) {
-      // Skip tables that cannot be read but continue with the rest
       tables.push({ name, columns: [], rows: [], error: err.message });
     }
   }
+
+  cleanup(); // delete temp file after parsing
 
   const readable = tables.filter(t => t.columns.length > 0);
   if (!readable.length) {
