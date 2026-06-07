@@ -51,12 +51,20 @@ app.post('/api/access', upload.single('file'), (req, res) => {
     try {
       const table   = reader.getTable(name);
       const columns = table.getColumnNames();
-      const rawRows = table.getData();
+      // getData() returns an array of plain objects keyed by column name
+      const rawRows = table.getData({ rowLimit: 5000 });
 
-      // Normalise each row from array → object, cap at 5000 rows
-      const rows = rawRows.slice(0, 5000).map(r =>
-        Object.fromEntries(columns.map((c, i) => [c, r[i] != null ? r[i] : '']))
-      );
+      const rows = rawRows.map(r => {
+        const obj = {};
+        for (const col of columns) {
+          const val = r[col];
+          if (val == null)              obj[col] = '';
+          else if (val instanceof Date) obj[col] = val.toISOString();
+          else if (Buffer.isBuffer(val)) obj[col] = `[Binary ${val.length}B]`;
+          else                           obj[col] = String(val);
+        }
+        return obj;
+      });
 
       if (columns.length) tables.push({ name, columns, rows });
     } catch (err) {
