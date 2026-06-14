@@ -43,12 +43,17 @@ document.addEventListener('DOMContentLoaded', () => {
   loadFromStorage();
   renderAll();
 
-  // Search
+  // Search — debounced 350ms so it doesn't fire on every keystroke
+  let _searchTimer = null;
   const si = document.getElementById('searchInput');
   si.addEventListener('input', () => {
-    state.searchQuery = si.value.trim();
-    document.getElementById('searchClear').style.display = state.searchQuery ? '' : 'none';
-    renderTabContent();
+    const val = si.value.trim();
+    document.getElementById('searchClear').style.display = val ? '' : 'none';
+    clearTimeout(_searchTimer);
+    _searchTimer = setTimeout(() => {
+      state.searchQuery = val;
+      renderTabContent();
+    }, 350);
   });
 
   // File inputs
@@ -305,12 +310,21 @@ function parseExcelFile(file, type) {
 // ═══════════════════════════════════════════════════════════
 //  SOURCE MANAGEMENT
 // ═══════════════════════════════════════════════════════════
+function buildSearchIndex(tables) {
+  // Pre-build one lowercase string per row for fast includes() search
+  for (const t of tables) {
+    t._index = t.rows.map(r => Object.values(r).join('\x00').toLowerCase());
+  }
+}
+
 function addSource(src) {
   // Avoid duplicate file names
   const existing = state.sources.findIndex(s => s.name === src.name);
   if (existing !== -1) {
     state.sources.splice(existing, 1);
   }
+
+  buildSearchIndex(src.tables);
 
   const id = uid();
   state.sources.push({ id, color: TYPE_COLOR[src.type], ...src });
@@ -367,10 +381,10 @@ function loadFromStorage() {
     if (!raw) return;
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
-      state.sources = parsed.map(s => ({
-        color: TYPE_COLOR[s.type] || '#64748b',
-        ...s,
-      }));
+      state.sources = parsed.map(s => {
+        buildSearchIndex(s.tables || []);
+        return { color: TYPE_COLOR[s.type] || '#64748b', ...s };
+      });
     }
   } catch(e) {}
 }
@@ -564,8 +578,10 @@ function renderTable(table, src, highlightQuery = '') {
     </div>`;
   }
 
-  const rows = highlightQuery ? table.rows.filter(r => rowMatches(r, highlightQuery)) : table.rows;
-  const displayRows = rows.slice(0, 500);
+  // In search mode rows are already filtered upstream; just cap display
+  const rows = highlightQuery ? table.rows : table.rows;
+  const limit = highlightQuery ? MAX_RESULTS_PER_TABLE : 500;
+  const displayRows = rows.slice(0, limit);
 
   const headerCells = table.columns.map(c => `<th>${esc(String(c))}</th>`).join('');
   const bodyRows = displayRows.map(row => {
@@ -599,13 +615,21 @@ function renderTable(table, src, highlightQuery = '') {
 }
 
 // ── Search results ──────────────────────────────────────────
+const MAX_RESULTS_PER_TABLE = 100;
+
 function renderSearchResults(srcs, q) {
   let totalMatches = 0;
   const groups = [];
 
   for (const src of srcs) {
     for (const table of src.tables) {
-      const matched = table.rows.filter(r => rowMatches(r, q));
+      const idx = table._index;
+      const matched = [];
+      for (let i = 0; i < table.rows.length; i++) {
+        if (rowMatches(table.rows[i], q, idx ? idx[i] : undefined)) {
+          matched.push(table.rows[i]);
+        }
+      }
       if (matched.length) {
         totalMatches += matched.length;
         groups.push({ src, table: { ...table, rows: matched } });
@@ -623,6 +647,7 @@ function renderSearchResults(srcs, q) {
         نتائج البحث: <strong>${totalMatches.toLocaleString('ar')}</strong> سجل
         في <strong>${groups.length}</strong> جدول
         لـ "<strong>${esc(q)}</strong>"
+        ${totalMatches > MAX_RESULTS_PER_TABLE * groups.length ? `<span style="color:var(--color-text-dim);font-size:0.8rem">(يُعرض أول ${MAX_RESULTS_PER_TABLE} لكل جدول)</span>` : ''}
       </div>
     </div>`;
 
@@ -633,7 +658,9 @@ function renderSearchResults(srcs, q) {
 // ═══════════════════════════════════════════════════════════
 //  HELPERS
 // ═══════════════════════════════════════════════════════════
-function rowMatches(row, q) {
+function rowMatches(row, q, indexStr) {
+  // Use pre-built index string when available (much faster for large tables)
+  if (indexStr !== undefined) return indexStr.includes(q);
   return Object.values(row).some(v => v != null && String(v).toLowerCase().includes(q));
 }
 
