@@ -112,8 +112,6 @@ const state = {
 };
 
 let sqlJs = null;     // sql.js SQL namespace
-const BACKEND = 'http://localhost:3000';
-let backendAvailable = false;
 
 // ── Colors ─────────────────────────────────────────────────
 const TYPE_COLOR = {
@@ -137,11 +135,10 @@ function uid() { return 'src_' + (++_uid); }
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
   initSqlJs();
-  checkBackend();
   loadFromStorage();
   renderAll();
 
-  // Search — debounced 350ms so it doesn't fire on every keystroke
+  // Search — debounced 250ms so it doesn't fire on every keystroke
   let _searchTimer = null;
   const si = document.getElementById('searchInput');
   si.addEventListener('input', () => {
@@ -151,21 +148,13 @@ document.addEventListener('DOMContentLoaded', () => {
     _searchTimer = setTimeout(() => {
       state.searchQuery = val;
       renderTabContent();
-    }, 350);
+    }, 250);
   });
 
   // File inputs
-  document.getElementById('accessFileInput').addEventListener('change', e => handleAccessFiles(e));
   document.getElementById('sqliteFileInput').addEventListener('change', e => handleSqliteFiles(e));
   document.getElementById('folderFileInput').addEventListener('change', e => handleFolderImport(e));
   document.getElementById('excelFileInput').addEventListener('change', e => handleExcelFiles(e));
-
-  // Access button: open file picker directly (backend handles .mdb/.accdb)
-  const accessBtn = document.getElementById('accessBtn');
-  accessBtn.onclick = null; // remove inline
-  accessBtn.addEventListener('click', () => {
-    document.getElementById('accessFileInput').click();
-  });
 
   // Export unified Excel
   document.getElementById('exportBtn').addEventListener('click', exportUnified);
@@ -177,31 +166,12 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('themeToggle').addEventListener('click', toggleTheme);
 });
 
-// ── Backend health check ─────────────────────────────────────
-async function checkBackend() {
-  try {
-    const r = await fetch(`${BACKEND}/api/health`, { signal: AbortSignal.timeout(2000) });
-    backendAvailable = r.ok;
-  } catch {
-    backendAvailable = false;
-  }
-  updateAccessBtnTitle();
-}
-
-function updateAccessBtnTitle() {
-  const btn = document.getElementById('accessBtn');
-  btn.title = backendAvailable
-    ? 'استيراد ملف Access (.mdb / .accdb)'
-    : 'الخادم غير متاح — شغّل: npm start';
-}
-
-// ── sql.js init ─────────────────────────────────────────────
+// ── sql.js init (local wasm — offline) ───────────────────────
 function initSqlJs() {
-  // sql.js CDN exposes window.initSqlJs
   const loader = window.initSqlJs || window.SQL;
   if (!loader) { state.sqlReady = false; return; }
 
-  const cfg = { locateFile: f => `https://cdn.jsdelivr.net/npm/sql.js@1.10.2/dist/${f}` };
+  const cfg = { locateFile: f => `vendor/${f}` };
   try {
     loader(cfg).then(SQL => {
       sqlJs = SQL;
@@ -226,74 +196,6 @@ function applyTheme(t) {
   const btn = document.getElementById('themeToggle');
   btn.querySelector('.theme-icon').textContent = t === 'light' ? '🌙' : '☀️';
   localStorage.setItem('uds_theme', t);
-}
-
-// ═══════════════════════════════════════════════════════════
-//  ACCESS FILE HANDLER
-// ═══════════════════════════════════════════════════════════
-async function handleAccessFiles(e) {
-  const files = Array.from(e.target.files);
-  if (!files.length) return;
-  e.target.value = '';
-
-  const nativeFiles = files.filter(f => /\.(mdb|accdb)$/i.test(f.name));
-  const csvFiles    = files.filter(f => /\.csv$/i.test(f.name));
-
-  // CSV exports from Access → parsed directly in the browser
-  csvFiles.forEach(file => parseExcelFile(file, 'access'));
-
-  // Native Access files → upload to Node.js backend
-  if (!nativeFiles.length) return;
-
-  // Re-check backend availability before attempting upload
-  await checkBackend();
-
-  if (!backendAvailable) {
-    document.getElementById('accessModal').style.display = 'flex';
-    return;
-  }
-
-  for (const file of nativeFiles) {
-    showLoading();
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-
-      notify(`جاري رفع ومعالجة "${file.name}"... قد يستغرق بعض الوقت للملفات الكبيرة`, 'info', 30000);
-      const res  = await fetch(`${BACKEND}/api/access`, { method: 'POST', body: formData });
-      const text = await res.text();
-
-      let json;
-      try {
-        json = JSON.parse(text);
-      } catch {
-        // Server returned non-JSON (e.g. HTML error page from a proxy)
-        notify(
-          `استجابة غير متوقعة من الخادم أثناء معالجة "${file.name}". تأكد أن npm start يعمل على المنفذ 3000.`,
-          'error', 7000
-        );
-        hideLoading();
-        continue;
-      }
-
-      if (!res.ok) {
-        notify(`خطأ في "${file.name}": ${json.error || res.statusText}`, 'error', 6000);
-        hideLoading();
-        continue;
-      }
-
-      addSource({ name: json.name, type: 'access', tables: json.tables, totalRows: json.totalRows });
-    } catch (err) {
-      // Network-level failure (server not running, CORS, etc.)
-      backendAvailable = false;
-      updateAccessBtnTitle();
-      notify(
-        `تعذّر الاتصال بالخادم أثناء معالجة "${file.name}". شغّل: npm start`,
-        'error', 7000
-      );
-    }
-    hideLoading();
-  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -456,6 +358,13 @@ function buildSearchIndexAsync(tables, onDone) {
   setTimeout(step, 0);
 }
 
+// Debounced save — avoids re-serializing everything on every imported file
+let _saveTimer = null;
+function scheduleSave() {
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(saveToStorage, 1500);
+}
+
 function addSource(src) {
   const existing = state.sources.findIndex(s => s.name === src.name);
   if (existing !== -1) state.sources.splice(existing, 1);
@@ -467,17 +376,15 @@ function addSource(src) {
   notify(`تم استيراد "${src.name}" بنجاح (${src.totalRows.toLocaleString('ar')} سجل)`, 'success');
 
   // Defer heavy work so the UI renders first
-  setTimeout(() => {
-    saveToStorage();
-    buildSearchIndexAsync(src.tables);
-  }, 50);
+  scheduleSave();
+  setTimeout(() => buildSearchIndexAsync(src.tables), 50);
 }
 
 function deleteSource(id) {
   state.sources = state.sources.filter(s => s.id !== id);
   state.activeFilters.delete(id);
   if (state.activeTab === id) state.activeTab = 'all';
-  saveToStorage();
+  scheduleSave();
   renderAll();
 }
 
@@ -542,7 +449,7 @@ function renderAll() {
 
 // ── Source chips under buttons ──────────────────────────────
 function renderChips() {
-  ['access','sqlite','excel'].forEach(type => {
+  ['sqlite','excel'].forEach(type => {
     const container = document.getElementById(type + 'Chips');
     const srcs = state.sources.filter(s => s.type === type);
     container.innerHTML = srcs.map(s => `
@@ -562,7 +469,7 @@ function renderChips() {
 
 // ── Record badges on import buttons ────────────────────────
 function renderBadges() {
-  ['access','sqlite','excel'].forEach(type => {
+  ['sqlite','excel'].forEach(type => {
     const badge = document.getElementById(type + 'Badge');
     const srcs = state.sources.filter(s => s.type === type);
     if (srcs.length) {
@@ -669,100 +576,126 @@ function switchTab(id) {
 }
 
 // ═══════════════════════════════════════════════════════════
-//  TAB CONTENT
+//  TAB CONTENT  (virtual-scroll based — fast for huge tables)
 // ═══════════════════════════════════════════════════════════
+const VT_ROW_H = 34;   // px per row
+const VT_VIEW_H = 440; // visible viewport height
+const VT_BUFFER = 6;   // extra rows above/below window
+let   _vtId = 0;
+let   _vtRegistry = {}; // id -> { columns, rows, query }
+
 function renderTabContent() {
   const container = document.getElementById('tabContent');
+  // Detach old scroll listeners
+  _vtRegistry = {};
   if (!state.sources.length) { container.innerHTML = ''; return; }
 
   const q = state.searchQuery.toLowerCase();
 
-  // Active sources based on filters
   const activeSrcs = state.activeFilters.size > 0
     ? state.sources.filter(s => state.activeFilters.has(s.id))
     : state.sources;
 
+  let html;
   if (q) {
-    container.innerHTML = renderSearchResults(activeSrcs, q);
-    return;
-  }
-
-  if (state.activeTab === 'all') {
-    container.innerHTML = renderAllTables(activeSrcs);
+    html = buildSearchHTML(activeSrcs, q);
+  } else if (state.activeTab === 'all') {
+    html = activeSrcs.length
+      ? activeSrcs.map(src => src.tables.map(t => tableShellHTML(t, src, t.rows, '')).join('')).join('')
+      : noResultsHTML('لا توجد مصادر محددة');
   } else {
     const src = state.sources.find(s => s.id === state.activeTab);
-    if (src) {
-      container.innerHTML = renderSourceTables(src);
-    }
+    html = src ? src.tables.map(t => tableShellHTML(t, src, t.rows, '')).join('') : '';
   }
+
+  container.innerHTML = html;
+  mountVirtualTables();
 }
 
-// ── Render all tables (merged view) ────────────────────────
-function renderAllTables(srcs) {
-  if (!srcs.length) return noResultsHTML('لا توجد مصادر محددة');
-  return srcs.map(src => renderSourceTables(src)).join('');
-}
-
-// ── Render tables for one source ───────────────────────────
-function renderSourceTables(src) {
-  return src.tables.map(t => renderTable(t, src)).join('');
-}
-
-// ── Render a single table ───────────────────────────────────
-function renderTable(table, src, highlightQuery = '') {
+// ── Build the static shell for a table; rows filled by virtualizer ──
+function tableShellHTML(table, src, rows, query) {
   if (!table.columns.length) {
-    return `<div class="table-wrapper" style="margin-bottom:16px">
-      <div class="table-header">
-        <div class="table-title">
-          <span class="table-name">${esc(table.name)}</span>
-          <span class="table-count" style="background:${src.color}">0</span>
-          <span class="result-source-badge badge-${src.type}">${TYPE_LABEL[src.type]}</span>
-        </div>
-      </div>
+    return `<div class="table-wrapper">
+      <div class="table-header"><div class="table-title">
+        <span class="table-name">${esc(table.name)}</span>
+        <span class="table-count" style="background:${src.color}">0</span>
+        <span class="result-source-badge badge-${src.type}">${TYPE_LABEL[src.type]}</span>
+      </div></div>
       <div class="no-results"><p>الجدول فارغ</p></div>
     </div>`;
   }
 
-  // In search mode rows are already filtered upstream; just cap display
-  const rows = highlightQuery ? table.rows : table.rows;
-  const limit = highlightQuery ? MAX_RESULTS_PER_TABLE : 500;
-  const displayRows = rows.slice(0, limit);
+  const id = 'vt_' + (++_vtId);
+  _vtRegistry[id] = { columns: table.columns, rows, query };
 
-  const headerCells = table.columns.map(c => `<th>${esc(String(c))}</th>`).join('');
-  const bodyRows = displayRows.map(row => {
-    const cells = table.columns.map(col => {
-      const val = row[col] != null ? String(row[col]) : '';
-      return `<td title="${esc(val)}">${highlightQuery ? highlightText(val, highlightQuery) : esc(val)}</td>`;
-    }).join('');
-    return `<tr>${cells}</tr>`;
-  }).join('');
-
-  const moreRows = rows.length > 500 ? `<div style="padding:10px 16px;font-size:0.82rem;color:var(--color-text-dim);border-top:1px solid var(--color-border)">يُعرض أول 500 من ${rows.length.toLocaleString('ar')} سجل</div>` : '';
+  const gridCols = table.columns.map(() => 'minmax(140px, 1fr)').join(' ');
+  const headCells = table.columns.map(c => `<div class="vt-cell vt-th">${esc(String(c))}</div>`).join('');
+  const count = rows.length;
+  const scrollH = Math.min(count * VT_ROW_H, VT_VIEW_H);
 
   return `
-    <div class="table-wrapper" style="margin-bottom:16px">
-      <div class="table-header">
-        <div class="table-title">
-          <span class="table-name">${esc(table.name)}</span>
-          <span class="table-count" style="background:${src.color}">${rows.length.toLocaleString('ar')}</span>
-          <span class="result-source-badge badge-${src.type}">${TYPE_LABEL[src.type]}</span>
-          <span style="font-size:0.78rem;color:var(--color-text-dim)">${esc(src.name)}</span>
+    <div class="table-wrapper">
+      <div class="table-header"><div class="table-title">
+        <span class="table-name">${esc(table.name)}</span>
+        <span class="table-count" style="background:${src.color}">${count.toLocaleString('ar')}</span>
+        <span class="result-source-badge badge-${src.type}">${TYPE_LABEL[src.type]}</span>
+        <span style="font-size:0.78rem;color:var(--color-text-dim)">${esc(src.name)}</span>
+      </div></div>
+      <div class="vt-outer">
+        <div class="vt-track" style="--vt-cols:${gridCols}">
+          <div class="vt-head">${headCells}</div>
+          <div class="vt-scroll" id="${id}" style="height:${scrollH}px">
+            <div class="vt-canvas" style="height:${count * VT_ROW_H}px">
+              <div class="vt-win"></div>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="table-scroll">
-        <table>
-          <thead><tr>${headerCells}</tr></thead>
-          <tbody>${bodyRows}</tbody>
-        </table>
-      </div>
-      ${moreRows}
     </div>`;
 }
 
-// ── Search results ──────────────────────────────────────────
-const MAX_RESULTS_PER_TABLE = 100;
+// ── Attach virtual scrollers to all mounted tables ──────────
+function mountVirtualTables() {
+  for (const id of Object.keys(_vtRegistry)) {
+    const scrollEl = document.getElementById(id);
+    if (!scrollEl) continue;
+    const winEl = scrollEl.querySelector('.vt-win');
+    const data  = _vtRegistry[id];
 
-function renderSearchResults(srcs, q) {
+    const render = () => {
+      const scrollTop = scrollEl.scrollTop;
+      const total = data.rows.length;
+      let start = Math.floor(scrollTop / VT_ROW_H) - VT_BUFFER;
+      if (start < 0) start = 0;
+      const visible = Math.ceil(VT_VIEW_H / VT_ROW_H) + VT_BUFFER * 2;
+      let end = start + visible;
+      if (end > total) end = total;
+
+      let html = '';
+      for (let i = start; i < end; i++) {
+        const row = data.rows[i];
+        let cells = '';
+        for (const col of data.columns) {
+          const val = row[col] != null ? String(row[col]) : '';
+          cells += `<div class="vt-cell" title="${esc(val)}">${data.query ? highlightText(val, data.query) : esc(val)}</div>`;
+        }
+        html += `<div class="vt-row">${cells}</div>`;
+      }
+      winEl.style.transform = `translateY(${start * VT_ROW_H}px)`;
+      winEl.innerHTML = html;
+    };
+
+    scrollEl.addEventListener('scroll', () => {
+      // rAF-throttle so scrolling stays smooth
+      if (scrollEl._raf) return;
+      scrollEl._raf = requestAnimationFrame(() => { scrollEl._raf = null; render(); });
+    });
+    render();
+  }
+}
+
+// ── Search: filter rows then reuse the virtual table shell ──
+function buildSearchHTML(srcs, q) {
   let totalMatches = 0;
   const groups = [];
 
@@ -771,13 +704,11 @@ function renderSearchResults(srcs, q) {
       const idx = table._index;
       const matched = [];
       for (let i = 0; i < table.rows.length; i++) {
-        if (rowMatches(table.rows[i], q, idx ? idx[i] : undefined)) {
-          matched.push(table.rows[i]);
-        }
+        if (rowMatches(table.rows[i], q, idx ? idx[i] : undefined)) matched.push(table.rows[i]);
       }
       if (matched.length) {
         totalMatches += matched.length;
-        groups.push({ src, table: { ...table, rows: matched } });
+        groups.push({ src, table, rows: matched });
       }
     }
   }
@@ -792,12 +723,10 @@ function renderSearchResults(srcs, q) {
         نتائج البحث: <strong>${totalMatches.toLocaleString('ar')}</strong> سجل
         في <strong>${groups.length}</strong> جدول
         لـ "<strong>${esc(q)}</strong>"
-        ${totalMatches > MAX_RESULTS_PER_TABLE * groups.length ? `<span style="color:var(--color-text-dim);font-size:0.8rem">(يُعرض أول ${MAX_RESULTS_PER_TABLE} لكل جدول)</span>` : ''}
       </div>
     </div>`;
 
-  const tables = groups.map(g => renderTable(g.table, g.src, q)).join('');
-  return header + tables;
+  return header + groups.map(g => tableShellHTML(g.table, g.src, g.rows, q)).join('');
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -873,16 +802,6 @@ function notify(msg, type = 'info', duration = 3500) {
   _notifTimer = setTimeout(() => { el.style.display = 'none'; }, duration);
 }
 
-// ── Modal ───────────────────────────────────────────────────
-function closeAccessModal() {
-  document.getElementById('accessModal').style.display = 'none';
-}
-
-// Close modal on overlay click
-document.addEventListener('click', e => {
-  if (e.target.id === 'accessModal') closeAccessModal();
-});
-
 // ── clearSearch ─────────────────────────────────────────────
 function clearSearch() {
   state.searchQuery = '';
@@ -930,7 +849,6 @@ function exportUnified() {
 }
 
 // ── Expose globals needed by inline onclick ─────────────────
-window.closeAccessModal = closeAccessModal;
 window.clearSearch = clearSearch;
 window.switchTab = switchTab;
 window.deleteSource = deleteSource;

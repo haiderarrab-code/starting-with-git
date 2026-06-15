@@ -1,15 +1,41 @@
 {
   "name": "unified-db-search",
-  "version": "1.0.0",
-  "description": "نظام البحث الموحّد في قواعد البيانات — Access / SQLite / Excel",
-  "main": "server.js",
+  "version": "2.0.0",
+  "description": "نظام البحث الموحّد في قواعد البيانات — Excel / SQLite (Electron desktop app)",
+  "main": "electron-main.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "electron .",
+    "dist": "electron-builder --win --x64",
+    "dist:portable": "electron-builder --win portable --x64"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "mdb-reader": "^2.2.1",
-    "multer": "^2.0.0"
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.unified.dbsearch",
+    "productName": "UnifiedDBSearch",
+    "files": [
+      "index.html",
+      "style.css",
+      "app.js",
+      "xlsx-worker.js",
+      "electron-main.js",
+      "vendor/**/*"
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
   }
 }

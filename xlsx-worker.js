@@ -1,8 +1,8 @@
-/* xlsx-worker.js — parses Excel/CSV off the main thread */
-const ROW_LIMIT = 10000; // max rows per sheet transferred to main thread
+/* xlsx-worker.js — parses Excel/CSV off the main thread (offline, local lib) */
+const ROW_LIMIT = 100000; // max rows per sheet transferred to main thread
 
 try {
-  importScripts('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js');
+  importScripts('vendor/xlsx.full.min.js');
   self.postMessage({ ready: true });
 } catch (e) {
   self.postMessage({ ready: false, error: e.message });
