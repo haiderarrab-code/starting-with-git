@@ -4,6 +4,57 @@
 
 'use strict';
 
+// ── Web Worker for Excel parsing (keeps UI responsive) ──────
+let _xlsxWorker = null;
+const _workerCallbacks = new Map();
+let   _workerMsgId = 0;
+
+function getWorker() {
+  if (_xlsxWorker) return _xlsxWorker;
+  try {
+    _xlsxWorker = new Worker('xlsx-worker.js');
+    _xlsxWorker.onmessage = e => {
+      const cb = _workerCallbacks.get(e.data.id);
+      if (cb) { _workerCallbacks.delete(e.data.id); cb(e.data); }
+    };
+    _xlsxWorker.onerror = err => {
+      console.warn('Worker error, falling back to main thread', err);
+      _xlsxWorker = null;
+    };
+  } catch { _xlsxWorker = null; }
+  return _xlsxWorker;
+}
+
+function parseExcelViaWorker(file, type) {
+  return new Promise(resolve => {
+    const worker = getWorker();
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const buffer = ev.target.result;
+      if (worker) {
+        const id = ++_workerMsgId;
+        _workerCallbacks.set(id, data => resolve({ ...data, type }));
+        worker.postMessage({ id, buffer, name: file.name }, [buffer]);
+      } else {
+        // Fallback: parse on main thread
+        try {
+          const wb = XLSX.read(buffer, { type: 'array', cellDates: true, WTF: false });
+          const tables = wb.SheetNames.map(s => {
+            const json = XLSX.utils.sheet_to_json(wb.Sheets[s], { defval: '' });
+            if (!json.length) return null;
+            return { name: s, columns: Object.keys(json[0]), rows: json };
+          }).filter(Boolean);
+          resolve({ id: 0, name: file.name, tables, error: null, type });
+        } catch (err) {
+          resolve({ id: 0, name: file.name, tables: null, error: err.message, type });
+        }
+      }
+    };
+    reader.onerror = () => resolve({ id: 0, name: file.name, tables: null, error: 'فشل قراءة الملف', type });
+    reader.readAsArrayBuffer(file);
+  });
+}
+
 // ── State ──────────────────────────────────────────────────
 const state = {
   sources: [],        // { id, name, type:'access'|'sqlite'|'excel', tables:[{name,columns,rows}], color, totalRows }
@@ -270,7 +321,7 @@ function handleExcelFiles(e) {
 }
 
 // ═══════════════════════════════════════════════════════════
-//  FOLDER IMPORT
+//  FOLDER IMPORT  (parallel via Worker — UI stays responsive)
 // ═══════════════════════════════════════════════════════════
 async function handleFolderImport(e) {
   const all = Array.from(e.target.files);
@@ -282,96 +333,48 @@ async function handleFolderImport(e) {
     return;
   }
 
-  notify(`جاري استيراد ${excelFiles.length} ملف...`, 'info', 60000);
+  notify(`جاري استيراد ${excelFiles.length} ملف...`, 'info', 120000);
+  let done = 0, errors = 0;
 
-  let done = 0;
-  // Process files sequentially to avoid browser overload
-  for (const file of excelFiles) {
-    await new Promise(resolve => {
-      parseExcelFileCallback(file, 'excel', () => {
-        done++;
-        if (done < excelFiles.length) {
-          notify(`جاري الاستيراد... ${done} / ${excelFiles.length}`, 'info', 60000);
-        }
-        resolve();
-      });
+  // Fire all parses in parallel — Worker handles them off the main thread
+  const promises = excelFiles.map(file =>
+    parseExcelViaWorker(file, 'excel').then(result => {
+      done++;
+      if (result.error) {
+        errors++;
+        notify(`خطأ في "${result.name}": ${result.error}`, 'error', 4000);
+      } else if (result.tables && result.tables.length) {
+        addSource({
+          name: result.name, type: 'excel',
+          tables: result.tables,
+          totalRows: result.tables.reduce((s, t) => s + t.rows.length, 0),
+        });
+      }
+      notify(`جاري الاستيراد... ${done} / ${excelFiles.length}`, 'info', 120000);
+    })
+  );
+
+  await Promise.all(promises);
+  const ok = done - errors;
+  notify(`تم استيراد ${ok} ملف بنجاح${errors ? ` (${errors} بها أخطاء)` : ''} ✓`, 'success', 5000);
+}
+
+// ── Single Excel file — via Worker ─────────────────────────
+async function parseExcelFile(file, type) {
+  showLoading();
+  const result = await parseExcelViaWorker(file, type);
+  if (result.error) {
+    notify(`خطأ في قراءة "${file.name}": ${result.error}`, 'error');
+  } else if (!result.tables || !result.tables.length) {
+    notify(`${file.name}: لا توجد بيانات في الملف.`, 'warning');
+  } else {
+    addSource({
+      name: result.name, type,
+      tables: result.tables,
+      totalRows: result.tables.reduce((s, t) => s + t.rows.length, 0),
     });
   }
-
-  notify(`تم استيراد ${done} ملف بنجاح ✓`, 'success', 4000);
-}
-
-// parseExcelFile with optional callback for sequential folder import
-function parseExcelFileCallback(file, type, onDone) {
-  if (typeof XLSX === 'undefined') {
-    notify('SheetJS لم يُحمَّل.', 'error');
-    onDone && onDone();
-    return;
-  }
-  const reader = new FileReader();
-  reader.onload = (ev) => {
-    try {
-      const data = ev.target.result;
-      const workbook = XLSX.read(data, { type: 'array', cellDates: true });
-      const tables = workbook.SheetNames.map(sheetName => {
-        const ws = workbook.Sheets[sheetName];
-        const json = XLSX.utils.sheet_to_json(ws, { defval: '' });
-        if (!json.length) return { name: sheetName, columns: [], rows: [] };
-        return { name: sheetName, columns: Object.keys(json[0]), rows: json };
-      }).filter(t => t.columns.length > 0);
-
-      if (tables.length) {
-        addSource({ name: file.name, type, tables, totalRows: tables.reduce((s, t) => s + t.rows.length, 0) });
-      }
-    } catch (err) {
-      notify(`خطأ في "${file.name}": ${err.message}`, 'error', 4000);
-    }
-    onDone && onDone();
-  };
-  reader.onerror = () => { notify(`فشل قراءة "${file.name}"`, 'error'); onDone && onDone(); };
-  reader.readAsArrayBuffer(file);
-}
-
-function parseExcelFile(file, type) {
-  if (typeof XLSX === 'undefined') {
-    notify('SheetJS لم يُحمَّل. تأكد من الاتصال بالإنترنت.', 'error');
-    return;
-  }
-
-  showLoading();
-  const reader = new FileReader();
-  reader.onload = (ev) => {
-    try {
-      const data = ev.target.result;
-      const workbook = XLSX.read(data, { type: 'array', cellDates: true });
-
-      const tables = workbook.SheetNames.map(sheetName => {
-        const ws = workbook.Sheets[sheetName];
-        const json = XLSX.utils.sheet_to_json(ws, { defval: '' });
-        if (!json.length) return { name: sheetName, columns: [], rows: [] };
-        const columns = Object.keys(json[0]);
-        return { name: sheetName, columns, rows: json };
-      }).filter(t => t.columns.length > 0);
-
-      if (!tables.length) {
-        notify(`${file.name}: لا توجد بيانات في الملف.`, 'warning');
-        hideLoading();
-        return;
-      }
-
-      addSource({
-        name: file.name,
-        type,
-        tables,
-        totalRows: tables.reduce((s, t) => s + t.rows.length, 0),
-      });
-    } catch(err) {
-      notify(`خطأ في قراءة ${file.name}: ${err.message}`, 'error');
-    }
-    hideLoading();
-  };
-  reader.onerror = () => { notify(`فشل قراءة الملف ${file.name}`, 'error'); hideLoading(); };
-  reader.readAsArrayBuffer(file);
+  hideLoading();
 }
 
 // ═══════════════════════════════════════════════════════════
