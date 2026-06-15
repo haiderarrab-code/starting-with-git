@@ -5,50 +5,97 @@
 'use strict';
 
 // ── Web Worker for Excel parsing (keeps UI responsive) ──────
-let _xlsxWorker = null;
+let _xlsxWorker     = null;
+let _workerReady    = false;   // true once Worker confirms XLSX is loaded
 const _workerCallbacks = new Map();
-let   _workerMsgId = 0;
+let   _workerMsgId  = 0;
+const WORKER_TIMEOUT_MS = 120_000; // 2 min max per file
 
 function getWorker() {
-  if (_xlsxWorker) return _xlsxWorker;
+  if (_xlsxWorker && _workerReady) return _xlsxWorker;
+  if (_xlsxWorker) return null; // still initialising — use fallback
   try {
     _xlsxWorker = new Worker('xlsx-worker.js');
     _xlsxWorker.onmessage = e => {
+      if (e.data.ready) { _workerReady = true; return; }
       const cb = _workerCallbacks.get(e.data.id);
       if (cb) { _workerCallbacks.delete(e.data.id); cb(e.data); }
     };
     _xlsxWorker.onerror = err => {
-      console.warn('Worker error, falling back to main thread', err);
+      console.warn('Worker failed, using main thread:', err.message);
+      // Reject all pending callbacks so they fall through to the fallback
+      for (const [id, cb] of _workerCallbacks) {
+        _workerCallbacks.delete(id);
+        cb({ id, name: '', tables: null, error: '__worker_failed__' });
+      }
+      _xlsxWorker.terminate();
       _xlsxWorker = null;
+      _workerReady = false;
     };
   } catch { _xlsxWorker = null; }
-  return _xlsxWorker;
+  return null; // not ready yet on first call
+}
+
+// Initialise worker early so it's warm by the time the user picks a file
+getWorker();
+
+function parseExcelOnMainThread(buffer, name) {
+  try {
+    const wb = XLSX.read(buffer, { type: 'array', cellDates: true, WTF: false });
+    const tables = wb.SheetNames.map(s => {
+      try {
+        const json = XLSX.utils.sheet_to_json(wb.Sheets[s], { defval: '' });
+        if (!json.length) return null;
+        return { name: s, columns: Object.keys(json[0]), rows: json };
+      } catch { return null; }
+    }).filter(Boolean);
+    return { name, tables, error: null };
+  } catch (err) {
+    return { name, tables: null, error: err.message };
+  }
 }
 
 function parseExcelViaWorker(file, type) {
   return new Promise(resolve => {
-    const worker = getWorker();
     const reader = new FileReader();
     reader.onload = ev => {
       const buffer = ev.target.result;
-      if (worker) {
-        const id = ++_workerMsgId;
-        _workerCallbacks.set(id, data => resolve({ ...data, type }));
-        worker.postMessage({ id, buffer, name: file.name }, [buffer]);
-      } else {
-        // Fallback: parse on main thread
-        try {
-          const wb = XLSX.read(buffer, { type: 'array', cellDates: true, WTF: false });
-          const tables = wb.SheetNames.map(s => {
-            const json = XLSX.utils.sheet_to_json(wb.Sheets[s], { defval: '' });
-            if (!json.length) return null;
-            return { name: s, columns: Object.keys(json[0]), rows: json };
-          }).filter(Boolean);
-          resolve({ id: 0, name: file.name, tables, error: null, type });
-        } catch (err) {
-          resolve({ id: 0, name: file.name, tables: null, error: err.message, type });
-        }
+      const worker = getWorker();
+
+      if (!worker) {
+        // Worker not ready — run on main thread (may freeze briefly for large files)
+        const result = parseExcelOnMainThread(buffer, file.name);
+        resolve({ ...result, type });
+        return;
       }
+
+      const id = ++_workerMsgId;
+      let settled = false;
+
+      // Timeout guard — if Worker goes silent, fall back
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        _workerCallbacks.delete(id);
+        console.warn(`Worker timed out for ${file.name}, falling back`);
+        const result = parseExcelOnMainThread(buffer.slice ? buffer.slice(0) : buffer, file.name);
+        resolve({ ...result, type });
+      }, WORKER_TIMEOUT_MS);
+
+      _workerCallbacks.set(id, data => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (data.error === '__worker_failed__') {
+          // Worker crashed mid-flight — re-parse on main thread
+          const result = parseExcelOnMainThread(buffer, file.name);
+          resolve({ ...result, type });
+        } else {
+          resolve({ ...data, type });
+        }
+      });
+
+      worker.postMessage({ id, buffer, name: file.name }, [buffer]);
     };
     reader.onerror = () => resolve({ id: 0, name: file.name, tables: null, error: 'فشل قراءة الملف', type });
     reader.readAsArrayBuffer(file);
