@@ -158,6 +158,24 @@ body {
 }
 .btn-clear-all:hover { border-color: var(--danger); color: var(--danger); background: rgba(239,68,68,0.08); }
 
+.btn-export {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: transparent;
+  border: 1px solid var(--excel-color);
+  color: var(--excel-color);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: all var(--transition);
+}
+.btn-export:hover { background: rgba(22,163,74,0.12); }
+.btn-export:disabled { opacity: 0.5; cursor: wait; }
+
 /* ===== Main ===== */
 .app-main {
   max-width: 1300px;
@@ -314,6 +332,38 @@ body {
   flex-shrink: 0;
 }
 .chip-delete:hover { background: rgba(239,68,68,0.15); color: var(--danger); }
+
+/* ===== Folder import row ===== */
+.folder-import-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+
+.btn-folder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 22px;
+  background: transparent;
+  border: 2px dashed var(--excel-color);
+  color: var(--excel-color);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.95rem;
+  font-weight: 700;
+  transition: all var(--transition);
+}
+.btn-folder:hover { background: rgba(22,163,74,0.1); border-style: solid; }
+
+.folder-hint {
+  font-size: 0.8rem;
+  color: var(--color-text-dim);
+}
 
 /* ===== Stats Bar ===== */
 .stats-bar {

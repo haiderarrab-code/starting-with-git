@@ -59,6 +59,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // File inputs
   document.getElementById('accessFileInput').addEventListener('change', e => handleAccessFiles(e));
   document.getElementById('sqliteFileInput').addEventListener('change', e => handleSqliteFiles(e));
+  document.getElementById('folderFileInput').addEventListener('change', e => handleFolderImport(e));
   document.getElementById('excelFileInput').addEventListener('change', e => handleExcelFiles(e));
 
   // Access button: open file picker directly (backend handles .mdb/.accdb)
@@ -67,6 +68,9 @@ document.addEventListener('DOMContentLoaded', () => {
   accessBtn.addEventListener('click', () => {
     document.getElementById('accessFileInput').click();
   });
+
+  // Export unified Excel
+  document.getElementById('exportBtn').addEventListener('click', exportUnified);
 
   // Clear all
   document.getElementById('clearAllBtn').addEventListener('click', clearAll);
@@ -265,6 +269,69 @@ function handleExcelFiles(e) {
   files.forEach(file => parseExcelFile(file, 'excel'));
 }
 
+// ═══════════════════════════════════════════════════════════
+//  FOLDER IMPORT
+// ═══════════════════════════════════════════════════════════
+async function handleFolderImport(e) {
+  const all = Array.from(e.target.files);
+  e.target.value = '';
+
+  const excelFiles = all.filter(f => /\.(xlsx|xls|csv)$/i.test(f.name));
+  if (!excelFiles.length) {
+    notify('لا توجد ملفات Excel في المجلد المختار (.xlsx / .xls / .csv)', 'warning', 5000);
+    return;
+  }
+
+  notify(`جاري استيراد ${excelFiles.length} ملف...`, 'info', 60000);
+
+  let done = 0;
+  // Process files sequentially to avoid browser overload
+  for (const file of excelFiles) {
+    await new Promise(resolve => {
+      parseExcelFileCallback(file, 'excel', () => {
+        done++;
+        if (done < excelFiles.length) {
+          notify(`جاري الاستيراد... ${done} / ${excelFiles.length}`, 'info', 60000);
+        }
+        resolve();
+      });
+    });
+  }
+
+  notify(`تم استيراد ${done} ملف بنجاح ✓`, 'success', 4000);
+}
+
+// parseExcelFile with optional callback for sequential folder import
+function parseExcelFileCallback(file, type, onDone) {
+  if (typeof XLSX === 'undefined') {
+    notify('SheetJS لم يُحمَّل.', 'error');
+    onDone && onDone();
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    try {
+      const data = ev.target.result;
+      const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+      const tables = workbook.SheetNames.map(sheetName => {
+        const ws = workbook.Sheets[sheetName];
+        const json = XLSX.utils.sheet_to_json(ws, { defval: '' });
+        if (!json.length) return { name: sheetName, columns: [], rows: [] };
+        return { name: sheetName, columns: Object.keys(json[0]), rows: json };
+      }).filter(t => t.columns.length > 0);
+
+      if (tables.length) {
+        addSource({ name: file.name, type, tables, totalRows: tables.reduce((s, t) => s + t.rows.length, 0) });
+      }
+    } catch (err) {
+      notify(`خطأ في "${file.name}": ${err.message}`, 'error', 4000);
+    }
+    onDone && onDone();
+  };
+  reader.onerror = () => { notify(`فشل قراءة "${file.name}"`, 'error'); onDone && onDone(); };
+  reader.readAsArrayBuffer(file);
+}
+
 function parseExcelFile(file, type) {
   if (typeof XLSX === 'undefined') {
     notify('SheetJS لم يُحمَّل. تأكد من الاتصال بالإنترنت.', 'error');
@@ -439,8 +506,14 @@ function renderBadges() {
 // ── Stats bar ───────────────────────────────────────────────
 function renderStatsBar() {
   const bar = document.getElementById('statsBar');
-  if (!state.sources.length) { bar.style.display = 'none'; return; }
+  const exportBtn = document.getElementById('exportBtn');
+  if (!state.sources.length) {
+    bar.style.display = 'none';
+    exportBtn.style.display = 'none';
+    return;
+  }
   bar.style.display = '';
+  exportBtn.style.display = '';
   const totalTables = state.sources.reduce((s, src) => s + src.tables.length, 0);
   const totalRecords = state.sources.reduce((s, src) => s + src.totalRows, 0);
   document.getElementById('totalSources').textContent = state.sources.length;
@@ -744,6 +817,44 @@ function clearSearch() {
   document.getElementById('searchInput').value = '';
   document.getElementById('searchClear').style.display = 'none';
   renderTabContent();
+}
+
+// ── Export unified Excel ────────────────────────────────────
+function exportUnified() {
+  if (!state.sources.length) return;
+  if (typeof XLSX === 'undefined') { notify('SheetJS غير متاح', 'error'); return; }
+
+  const btn = document.getElementById('exportBtn');
+  btn.disabled = true;
+  btn.textContent = 'جاري التصدير...';
+
+  try {
+    const wb = XLSX.utils.book_new();
+    const usedNames = new Set();
+
+    for (const src of state.sources) {
+      for (const table of src.tables) {
+        // Build a unique sheet name ≤31 chars (Excel limit)
+        let sheetName = `${src.name.replace(/\.[^.]+$/, '')}_${table.name}`.slice(0, 31);
+        // Deduplicate
+        let base = sheetName, n = 2;
+        while (usedNames.has(sheetName)) sheetName = `${base.slice(0, 28)}_${n++}`;
+        usedNames.add(sheetName);
+
+        const ws = XLSX.utils.json_to_sheet(table.rows);
+        XLSX.utils.book_append_sheet(wb, ws, sheetName);
+      }
+    }
+
+    const date = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(wb, `بيانات_موحدة_${date}.xlsx`);
+    notify('تم تصدير الملف بنجاح ✓', 'success');
+  } catch (err) {
+    notify(`خطأ في التصدير: ${err.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> تصدير موحّد`;
+  }
 }
 
 // ── Expose globals needed by inline onclick ─────────────────
