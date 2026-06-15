@@ -428,27 +428,49 @@ async function parseExcelFile(file, type) {
 //  SOURCE MANAGEMENT
 // ═══════════════════════════════════════════════════════════
 function buildSearchIndex(tables) {
-  // Pre-build one lowercase string per row for fast includes() search
   for (const t of tables) {
     t._index = t.rows.map(r => Object.values(r).join('\x00').toLowerCase());
   }
 }
 
-function addSource(src) {
-  // Avoid duplicate file names
-  const existing = state.sources.findIndex(s => s.name === src.name);
-  if (existing !== -1) {
-    state.sources.splice(existing, 1);
+// Builds index in 500-row chunks using setTimeout so the UI stays responsive
+function buildSearchIndexAsync(tables, onDone) {
+  const work = tables.map(t => ({ t, i: 0 }));
+  function step() {
+    const CHUNK = 500;
+    let busy = false;
+    for (const item of work) {
+      if (item.i >= item.t.rows.length) continue;
+      busy = true;
+      if (!item.t._index) item.t._index = [];
+      const end = Math.min(item.i + CHUNK, item.t.rows.length);
+      for (let r = item.i; r < end; r++) {
+        item.t._index[r] = Object.values(item.t.rows[r]).join('\x00').toLowerCase();
+      }
+      item.i = end;
+      break; // one table chunk per tick
+    }
+    if (busy) setTimeout(step, 0);
+    else onDone && onDone();
   }
+  setTimeout(step, 0);
+}
 
-  buildSearchIndex(src.tables);
+function addSource(src) {
+  const existing = state.sources.findIndex(s => s.name === src.name);
+  if (existing !== -1) state.sources.splice(existing, 1);
 
   const id = uid();
   state.sources.push({ id, color: TYPE_COLOR[src.type], ...src });
   state.activeTab = 'all';
-  saveToStorage();
   renderAll();
   notify(`تم استيراد "${src.name}" بنجاح (${src.totalRows.toLocaleString('ar')} سجل)`, 'success');
+
+  // Defer heavy work so the UI renders first
+  setTimeout(() => {
+    saveToStorage();
+    buildSearchIndexAsync(src.tables);
+  }, 50);
 }
 
 function deleteSource(id) {

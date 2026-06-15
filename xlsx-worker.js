@@ -1,9 +1,10 @@
 /* xlsx-worker.js — parses Excel/CSV off the main thread */
+const ROW_LIMIT = 10000; // max rows per sheet transferred to main thread
+
 try {
   importScripts('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js');
-  self.postMessage({ ready: true }); // signal to main thread that XLSX loaded
+  self.postMessage({ ready: true });
 } catch (e) {
-  // CDN failed — tell main thread to use fallback
   self.postMessage({ ready: false, error: e.message });
   self.close();
 }
@@ -15,10 +16,13 @@ self.onmessage = function (e) {
     const tables = workbook.SheetNames
       .map(sheetName => {
         try {
-          const ws   = workbook.Sheets[sheetName];
-          const json = XLSX.utils.sheet_to_json(ws, { defval: '' });
+          const ws    = workbook.Sheets[sheetName];
+          const json  = XLSX.utils.sheet_to_json(ws, { defval: '' });
           if (!json.length) return null;
-          return { name: sheetName, columns: Object.keys(json[0]), rows: json };
+          const columns = Object.keys(json[0]);
+          const total   = json.length;
+          const rows    = json.slice(0, ROW_LIMIT);
+          return { name: sheetName, columns, rows, total };
         } catch { return null; }
       })
       .filter(Boolean);
