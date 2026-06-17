@@ -104,25 +104,18 @@ function parseExcelViaWorker(file, type) {
 
 // ── State ──────────────────────────────────────────────────
 const state = {
-  sources: [],        // { id, name, type:'access'|'sqlite'|'excel', tables:[{name,columns,rows}], color, totalRows }
+  sources: [],        // { id, name, type:'excel', tables:[{name,columns,rows}], color, totalRows }
   activeTab: 'all',   // tab id or 'all' or 'search'
   searchQuery: '',
   activeFilters: new Set(), // source ids to filter by (empty = all)
-  sqlReady: false,
 };
-
-let sqlJs = null;     // sql.js SQL namespace
 
 // ── Colors ─────────────────────────────────────────────────
 const TYPE_COLOR = {
-  access: '#7c3aed',
-  sqlite: '#0891b2',
-  excel:  '#16a34a',
+  excel: '#16a34a',
 };
 const TYPE_LABEL = {
-  access: 'Access',
-  sqlite: 'SQLite',
-  excel:  'Excel',
+  excel: 'Excel',
 };
 
 // ── Unique ID ───────────────────────────────────────────────
@@ -134,7 +127,6 @@ function uid() { return 'src_' + (++_uid); }
 // ═══════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
-  initSqlJs();
   loadFromStorage();
   renderAll();
 
@@ -152,7 +144,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // File inputs
-  document.getElementById('sqliteFileInput').addEventListener('change', e => handleSqliteFiles(e));
   document.getElementById('folderFileInput').addEventListener('change', e => handleFolderImport(e));
   document.getElementById('excelFileInput').addEventListener('change', e => handleExcelFiles(e));
 
@@ -165,20 +156,6 @@ document.addEventListener('DOMContentLoaded', () => {
   // Theme
   document.getElementById('themeToggle').addEventListener('click', toggleTheme);
 });
-
-// ── sql.js init (local wasm — offline) ───────────────────────
-function initSqlJs() {
-  const loader = window.initSqlJs || window.SQL;
-  if (!loader) { state.sqlReady = false; return; }
-
-  const cfg = { locateFile: f => `vendor/${f}` };
-  try {
-    loader(cfg).then(SQL => {
-      sqlJs = SQL;
-      state.sqlReady = true;
-    }).catch(() => { state.sqlReady = false; });
-  } catch(e) { state.sqlReady = false; }
-}
 
 // ═══════════════════════════════════════════════════════════
 //  THEME
@@ -196,67 +173,6 @@ function applyTheme(t) {
   const btn = document.getElementById('themeToggle');
   btn.querySelector('.theme-icon').textContent = t === 'light' ? '🌙' : '☀️';
   localStorage.setItem('uds_theme', t);
-}
-
-// ═══════════════════════════════════════════════════════════
-//  SQLITE FILE HANDLER
-// ═══════════════════════════════════════════════════════════
-async function handleSqliteFiles(e) {
-  const files = Array.from(e.target.files);
-  if (!files.length) return;
-  e.target.value = '';
-
-  if (!state.sqlReady || !sqlJs) {
-    notify('sql.js لم يُحمَّل بعد. تأكد من الاتصال بالإنترنت وأعد المحاولة.', 'error');
-    return;
-  }
-
-  for (const file of files) {
-    showLoading();
-    try {
-      const buf = await file.arrayBuffer();
-      const arr = new Uint8Array(buf);
-      const db = new sqlJs.Database(arr);
-
-      const tablesRes = db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
-      if (!tablesRes.length || !tablesRes[0].values.length) {
-        notify(`${file.name}: لا توجد جداول في قاعدة البيانات.`, 'warning');
-        hideLoading();
-        continue;
-      }
-
-      const tableNames = tablesRes[0].values.map(r => r[0]);
-      const tables = [];
-
-      for (const tname of tableNames) {
-        try {
-          const res = db.exec(`SELECT * FROM "${tname}" LIMIT 5000`);
-          if (res.length) {
-            tables.push({
-              name: tname,
-              columns: res[0].columns,
-              rows: res[0].values.map(r => Object.fromEntries(res[0].columns.map((c,i) => [c, r[i]]))),
-            });
-          } else {
-            tables.push({ name: tname, columns: [], rows: [] });
-          }
-        } catch(te) {
-          tables.push({ name: tname, columns: [], rows: [] });
-        }
-      }
-      db.close();
-
-      addSource({
-        name: file.name,
-        type: 'sqlite',
-        tables,
-        totalRows: tables.reduce((s, t) => s + t.rows.length, 0),
-      });
-    } catch(err) {
-      notify(`خطأ في قراءة ${file.name}: ${err.message}`, 'error');
-    }
-    hideLoading();
-  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -449,37 +365,33 @@ function renderAll() {
 
 // ── Source chips under buttons ──────────────────────────────
 function renderChips() {
-  ['sqlite','excel'].forEach(type => {
-    const container = document.getElementById(type + 'Chips');
-    const srcs = state.sources.filter(s => s.type === type);
-    container.innerHTML = srcs.map(s => `
-      <div class="source-chip" onclick="switchTab('${s.id}')">
-        <span class="chip-dot" style="background:${s.color}"></span>
-        <span class="chip-name" title="${esc(s.name)}">${esc(s.name)}</span>
-        <span class="chip-count" style="background:${s.color}">${s.totalRows.toLocaleString('ar')}</span>
-        <button class="chip-delete" title="حذف" onclick="event.stopPropagation();deleteSource('${s.id}')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12">
-            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-          </svg>
-        </button>
-      </div>
-    `).join('');
-  });
+  const container = document.getElementById('excelChips');
+  const srcs = state.sources.filter(s => s.type === 'excel');
+  container.innerHTML = srcs.map(s => `
+    <div class="source-chip" onclick="switchTab('${s.id}')">
+      <span class="chip-dot" style="background:${s.color}"></span>
+      <span class="chip-name" title="${esc(s.name)}">${esc(s.name)}</span>
+      <span class="chip-count" style="background:${s.color}">${s.totalRows.toLocaleString('ar')}</span>
+      <button class="chip-delete" title="حذف" onclick="event.stopPropagation();deleteSource('${s.id}')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="12" height="12">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+  `).join('');
 }
 
 // ── Record badges on import buttons ────────────────────────
 function renderBadges() {
-  ['sqlite','excel'].forEach(type => {
-    const badge = document.getElementById(type + 'Badge');
-    const srcs = state.sources.filter(s => s.type === type);
-    if (srcs.length) {
-      const total = srcs.reduce((s, x) => s + x.totalRows, 0);
-      badge.textContent = total.toLocaleString('ar');
-      badge.style.display = '';
-    } else {
-      badge.style.display = 'none';
-    }
-  });
+  const badge = document.getElementById('excelBadge');
+  const srcs = state.sources.filter(s => s.type === 'excel');
+  if (srcs.length) {
+    const total = srcs.reduce((s, x) => s + x.totalRows, 0);
+    badge.textContent = total.toLocaleString('ar');
+    badge.style.display = '';
+  } else {
+    badge.style.display = 'none';
+  }
 }
 
 // ── Stats bar ───────────────────────────────────────────────
