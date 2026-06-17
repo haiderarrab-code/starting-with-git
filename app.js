@@ -57,13 +57,21 @@ function parseExcelOnMainThread(buffer, name) {
 
 function parseExcelViaWorker(file, type) {
   return new Promise(resolve => {
+    const isTxt = /\.txt$/i.test(file.name);
     const reader = new FileReader();
+
     reader.onload = ev => {
-      const buffer = ev.target.result;
+      let buffer = ev.target.result;
+
+      // .txt files arrive as a string (Windows-1256 decoded) — convert to ArrayBuffer for XLSX
+      if (isTxt && typeof buffer === 'string') {
+        const enc = new TextEncoder();
+        buffer = enc.encode(buffer).buffer;
+      }
+
       const worker = getWorker();
 
       if (!worker) {
-        // Worker not ready — run on main thread (may freeze briefly for large files)
         const result = parseExcelOnMainThread(buffer, file.name);
         resolve({ ...result, type });
         return;
@@ -98,7 +106,11 @@ function parseExcelViaWorker(file, type) {
       worker.postMessage({ id, buffer, name: file.name }, [buffer]);
     };
     reader.onerror = () => resolve({ id: 0, name: file.name, tables: null, error: 'فشل قراءة الملف', type });
-    reader.readAsArrayBuffer(file);
+    if (isTxt) {
+      reader.readAsText(file, 'windows-1256');
+    } else {
+      reader.readAsArrayBuffer(file);
+    }
   });
 }
 
@@ -192,9 +204,9 @@ async function handleFolderImport(e) {
   const all = Array.from(e.target.files);
   e.target.value = '';
 
-  const excelFiles = all.filter(f => /\.(xlsx|xls|csv)$/i.test(f.name));
+  const excelFiles = all.filter(f => /\.(xlsx|xls|csv|txt)$/i.test(f.name));
   if (!excelFiles.length) {
-    notify('لا توجد ملفات Excel في المجلد المختار (.xlsx / .xls / .csv)', 'warning', 5000);
+    notify('لا توجد ملفات Excel في المجلد المختار (.xlsx / .xls / .csv / .txt)', 'warning', 5000);
     return;
   }
 
