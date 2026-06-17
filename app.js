@@ -723,23 +723,32 @@ function clearSearch() {
 }
 
 // ── Export unified Excel ────────────────────────────────────
-function exportUnified() {
+async function exportUnified() {
   if (!state.sources.length) return;
   if (typeof XLSX === 'undefined') { notify('SheetJS غير متاح', 'error'); return; }
 
   const btn = document.getElementById('exportBtn');
   btn.disabled = true;
-  btn.textContent = 'جاري التصدير...';
+
+  const totalTables = state.sources.reduce((s, src) => s + src.tables.length, 0);
+  const resetBtn = () => {
+    btn.disabled = false;
+    btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> تصدير موحّد`;
+  };
 
   try {
     const wb = XLSX.utils.book_new();
     const usedNames = new Set();
+    let done = 0;
 
     for (const src of state.sources) {
       for (const table of src.tables) {
-        // Build a unique sheet name ≤31 chars (Excel limit)
+        done++;
+        btn.textContent = `جاري التصدير... ${done}/${totalTables}`;
+        // Yield to browser so UI updates between sheets
+        await new Promise(r => setTimeout(r, 0));
+
         let sheetName = `${src.name.replace(/\.[^.]+$/, '')}_${table.name}`.slice(0, 31);
-        // Deduplicate
         let base = sheetName, n = 2;
         while (usedNames.has(sheetName)) sheetName = `${base.slice(0, 28)}_${n++}`;
         usedNames.add(sheetName);
@@ -749,14 +758,16 @@ function exportUnified() {
       }
     }
 
+    btn.textContent = 'جاري حفظ الملف...';
+    await new Promise(r => setTimeout(r, 0));
+
     const date = new Date().toISOString().slice(0, 10);
     XLSX.writeFile(wb, `بيانات_موحدة_${date}.xlsx`);
     notify('تم تصدير الملف بنجاح ✓', 'success');
   } catch (err) {
     notify(`خطأ في التصدير: ${err.message}`, 'error');
   } finally {
-    btn.disabled = false;
-    btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> تصدير موحّد`;
+    resetBtn();
   }
 }
 
