@@ -462,6 +462,9 @@ function renderSearchSection() {
 
 function renderFilterPills() {
   const container = document.getElementById('searchFilters');
+  const toggle = document.getElementById('filtersToggle');
+  const count = state.sources.length;
+
   const pills = [
     { id: 'all_pill', label: 'الكل', color: '#6366f1' },
     ...state.sources.map(s => ({ id: s.id, label: s.name, color: s.color })),
@@ -479,6 +482,23 @@ function renderFilterPills() {
       </button>
     `;
   }).join('');
+
+  if (count) {
+    toggle.style.display = '';
+    document.getElementById('filtersToggleLabel').textContent = `فلترة المصادر (${count})`;
+  } else {
+    toggle.style.display = 'none';
+    container.classList.remove('open');
+    toggle.classList.remove('open');
+  }
+}
+
+function toggleFilters() {
+  const container = document.getElementById('searchFilters');
+  const toggle = document.getElementById('filtersToggle');
+  const isOpen = container.classList.contains('open');
+  container.classList.toggle('open', !isOpen);
+  toggle.classList.toggle('open', !isOpen);
 }
 
 function toggleFilter(id) {
@@ -830,3 +850,4 @@ window.switchTab = switchTab;
 window.deleteSource = deleteSource;
 window.toggleFilter = toggleFilter;
 window.toggleChips = toggleChips;
+window.toggleFilters = toggleFilters;
