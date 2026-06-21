@@ -210,13 +210,16 @@ async function handleFolderImport(e) {
     return;
   }
 
-  notify(`جاري استيراد ${excelFiles.length} ملف...`, 'info', 120000);
   let done = 0, errors = 0;
+  const total = excelFiles.length;
+  showProgress(`جاري استيراد ${total} ملف...`, 0);
 
   // Fire all parses in parallel — Worker handles them off the main thread
   const promises = excelFiles.map(file =>
     parseExcelViaWorker(file, 'excel').then(result => {
       done++;
+      const pct = (done / total) * 100;
+      showProgress(`جاري الاستيراد... ${done} / ${total} — ${file.name}`, pct);
       if (result.error) {
         errors++;
         notify(`خطأ في "${result.name}": ${result.error}`, 'error', 4000);
@@ -227,22 +230,26 @@ async function handleFolderImport(e) {
           totalRows: result.tables.reduce((s, t) => s + t.rows.length, 0),
         });
       }
-      notify(`جاري الاستيراد... ${done} / ${excelFiles.length}`, 'info', 120000);
     })
   );
 
   await Promise.all(promises);
+  hideProgress();
   const ok = done - errors;
   notify(`تم استيراد ${ok} ملف بنجاح${errors ? ` (${errors} بها أخطاء)` : ''} ✓`, 'success', 5000);
 }
 
 // ── Single Excel file — via Worker ─────────────────────────
 async function parseExcelFile(file, type) {
-  showLoading();
+  showProgress(`جاري قراءة "${file.name}"...`, 30);
   const result = await parseExcelViaWorker(file, type);
+  showProgress(`جاري معالجة البيانات...`, 80);
+  await new Promise(r => setTimeout(r, 0));
   if (result.error) {
+    hideProgress();
     notify(`خطأ في قراءة "${file.name}": ${result.error}`, 'error');
   } else if (!result.tables || !result.tables.length) {
+    hideProgress();
     notify(`${file.name}: لا توجد بيانات في الملف.`, 'warning');
   } else {
     addSource({
@@ -250,8 +257,10 @@ async function parseExcelFile(file, type) {
       tables: result.tables,
       totalRows: result.tables.reduce((s, t) => s + t.rows.length, 0),
     });
+    showProgress(`تم التحميل ✓`, 100);
+    await new Promise(r => setTimeout(r, 600));
+    hideProgress();
   }
-  hideLoading();
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -713,6 +722,19 @@ function hideLoading() {
     const el = document.getElementById('globalLoading');
     if (el) el.remove();
   }
+}
+
+// ── Progress bar ────────────────────────────────────────────
+function showProgress(title, pct) {
+  const bar = document.getElementById('importProgress');
+  document.getElementById('progressTitle').textContent = title;
+  document.getElementById('progressText').textContent = Math.round(pct) + '%';
+  document.getElementById('progressFill').style.width = pct + '%';
+  bar.classList.add('visible');
+}
+function hideProgress() {
+  document.getElementById('importProgress').classList.remove('visible');
+  document.getElementById('progressFill').style.width = '0%';
 }
 
 // ── Notifications ───────────────────────────────────────────
