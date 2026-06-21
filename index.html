@@ -18,9 +18,10 @@
   <div id="importProgress">
     <div class="progress-label">
       <strong id="progressTitle">جاري الاستيراد...</strong>
-      <div style="display:flex;align-items:center;gap:12px">
+      <div style="display:flex;align-items:center;gap:8px">
         <span id="progressText">0%</span>
-        <button id="progressCancel" onclick="cancelImport()" title="إلغاء الاستيراد" style="background:none;border:none;cursor:pointer;color:var(--color-text-dim);font-size:1.1rem;line-height:1;padding:2px 4px;border-radius:4px;transition:color 0.2s">✕</button>
+        <button onclick="skipImport()" title="تخطي الملف الحالي" style="background:var(--color-surface2);border:1px solid var(--color-border);cursor:pointer;color:var(--color-text-muted);font-size:0.75rem;padding:3px 10px;border-radius:var(--radius-full);font-family:inherit;transition:all 0.2s">تخطي ⏭</button>
+        <button onclick="cancelImport()" title="إلغاء الاستيراد" style="background:none;border:1px solid #ef4444;cursor:pointer;color:#ef4444;font-size:0.75rem;padding:3px 10px;border-radius:var(--radius-full);font-family:inherit;transition:all 0.2s">إلغاء ✕</button>
       </div>
     </div>
     <div class="progress-track">

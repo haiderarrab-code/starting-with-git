@@ -283,7 +283,7 @@ async function parseWordFile(file) {
 }
 
 // ═══════════════════════════════════════════════════════════
-//  FOLDER IMPORT  (parallel via Worker — UI stays responsive)
+//  FOLDER IMPORT  (sequential — supports cancel & skip per file)
 // ═══════════════════════════════════════════════════════════
 async function handleFolderImport(e) {
   const all = Array.from(e.target.files);
@@ -291,45 +291,56 @@ async function handleFolderImport(e) {
 
   const excelFiles = all.filter(f => /\.(xlsx|xls|csv|txt|docx)$/i.test(f.name));
   if (!excelFiles.length) {
-    notify('لا توجد ملفات Excel في المجلد المختار (.xlsx / .xls / .csv / .txt)', 'warning', 5000);
+    notify('لا توجد ملفات مدعومة في المجلد (.xlsx / .xls / .csv / .txt / .docx)', 'warning', 5000);
     return;
   }
 
-  let done = 0, errors = 0;
+  let done = 0, skipped = 0, errors = 0;
   const total = excelFiles.length;
   _importCancelled = false;
+  _importSkip = false;
   showProgress(`جاري استيراد ${total} ملف...`, 0);
 
-  // Fire all parses in parallel — Worker handles them off the main thread
-  const promises = excelFiles.map(file => {
-    if (/\.docx$/i.test(file.name)) {
-      return parseWordFile(file).then(() => {
-        if (_importCancelled) return;
-        done++; showProgress(`جاري الاستيراد... ${done} / ${total}`, (done/total)*100);
-      });
-    }
-    return parseExcelViaWorker(file, 'excel').then(result => {
-      if (_importCancelled) return;
-      done++;
-      const pct = (done / total) * 100;
-      showProgress(`جاري الاستيراد... ${done} / ${total} — ${file.name}`, pct);
-      if (result.error) {
-        errors++;
-        notify(`خطأ في "${result.name}": ${result.error}`, 'error', 4000);
-      } else if (result.tables && result.tables.length) {
-        addSource({
-          name: result.name, type: 'excel',
-          tables: result.tables,
-          totalRows: result.tables.reduce((s, t) => s + t.rows.length, 0),
-        });
-      }
-    });
-  });
+  for (const file of excelFiles) {
+    if (_importCancelled) break;
 
-  await Promise.all(promises);
+    _importSkip = false;
+    showProgress(`(${done + 1}/${total}) ${file.name}`, (done / total) * 100);
+
+    // Wait briefly so UI updates and user can press skip
+    await new Promise(r => setTimeout(r, 50));
+    if (_importSkip) { skipped++; done++; continue; }
+    if (_importCancelled) break;
+
+    try {
+      if (/\.docx$/i.test(file.name)) {
+        await parseWordFile(file);
+      } else {
+        const result = await parseExcelViaWorker(file, 'excel');
+        if (_importSkip) { skipped++; done++; continue; }
+        if (result.error) {
+          errors++;
+          notify(`خطأ في "${result.name}": ${result.error}`, 'error', 3000);
+        } else if (result.tables && result.tables.length) {
+          addSource({
+            name: result.name, type: 'excel',
+            tables: result.tables,
+            totalRows: result.tables.reduce((s, t) => s + t.rows.length, 0),
+          });
+        }
+      }
+    } catch(err) {
+      errors++;
+    }
+    done++;
+  }
+
   if (!_importCancelled) hideProgress();
-  const ok = done - errors;
-  notify(`تم استيراد ${ok} ملف بنجاح${errors ? ` (${errors} بها أخطاء)` : ''} ✓`, 'success', 5000);
+  const ok = done - errors - skipped;
+  const parts = [`تم استيراد ${ok} ملف بنجاح`];
+  if (skipped) parts.push(`${skipped} مُتخطى`);
+  if (errors) parts.push(`${errors} بها أخطاء`);
+  notify(parts.join(' — ') + ' ✓', 'success', 5000);
 }
 
 // ── Single Excel file — via Worker ─────────────────────────
@@ -860,11 +871,16 @@ function hideLoading() {
 
 // ── Progress bar ────────────────────────────────────────────
 let _importCancelled = false;
+let _importSkip = false;
 
 function cancelImport() {
   _importCancelled = true;
   hideProgress();
   notify('تم إلغاء الاستيراد', 'info', 3000);
+}
+
+function skipImport() {
+  _importSkip = true;
 }
 
 function showProgress(title, pct) {
@@ -877,6 +893,7 @@ function showProgress(title, pct) {
 }
 function hideProgress() {
   _importCancelled = false;
+  _importSkip = false;
   document.getElementById('importProgress').classList.remove('visible');
   document.getElementById('progressFill').style.width = '0%';
 }
@@ -957,3 +974,4 @@ window.toggleFilter = toggleFilter;
 window.toggleChips = toggleChips;
 window.toggleFilters = toggleFilters;
 window.cancelImport = cancelImport;
+window.skipImport = skipImport;
