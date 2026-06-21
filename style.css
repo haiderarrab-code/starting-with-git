@@ -285,25 +285,58 @@ body {
 .excel-badge  { background: #15803d; }
 
 /* Source chips */
+.chips-toggle {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 5px 10px;
+  background: none;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-full);
+  color: var(--color-text-dim);
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: border-color var(--transition), color var(--transition);
+  width: 100%;
+  justify-content: center;
+}
+.chips-toggle:hover { border-color: var(--excel-color); color: var(--excel-color); }
+.chips-toggle.visible { display: flex; }
+.chips-toggle-arrow {
+  transition: transform 0.2s ease;
+  font-size: 0.7rem;
+}
+.chips-toggle.open .chips-toggle-arrow { transform: rotate(180deg); }
+
 .source-chips {
   width: 100%;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  flex-wrap: wrap;
   gap: 6px;
+  margin-top: 6px;
+  overflow: hidden;
+  max-height: 0;
+  transition: max-height 0.3s ease;
+}
+.source-chips.open {
+  max-height: 1000px;
 }
 
 .source-chip {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 12px;
+  gap: 6px;
+  padding: 5px 10px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  font-size: 0.82rem;
+  border-radius: var(--radius-full);
+  font-size: 0.78rem;
   color: var(--color-text-muted);
   transition: border-color var(--transition);
   cursor: pointer;
+  white-space: nowrap;
 }
 .source-chip:hover { border-color: var(--color-text-dim); }
 

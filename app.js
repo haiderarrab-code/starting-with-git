@@ -387,7 +387,9 @@ function renderAll() {
 // ── Source chips under buttons ──────────────────────────────
 function renderChips() {
   const container = document.getElementById('excelChips');
+  const toggle = document.getElementById('chipsToggle');
   const srcs = state.sources.filter(s => s.type === 'excel');
+
   container.innerHTML = srcs.map(s => `
     <div class="source-chip" onclick="switchTab('${s.id}')">
       <span class="chip-dot" style="background:${s.color}"></span>
@@ -400,6 +402,23 @@ function renderChips() {
       </button>
     </div>
   `).join('');
+
+  if (srcs.length) {
+    toggle.classList.add('visible');
+    document.getElementById('chipsToggleLabel').textContent = `${srcs.length} ملف — عرض / إخفاء`;
+  } else {
+    toggle.classList.remove('visible');
+    container.classList.remove('open');
+    toggle.classList.remove('open');
+  }
+}
+
+function toggleChips() {
+  const container = document.getElementById('excelChips');
+  const toggle = document.getElementById('chipsToggle');
+  const isOpen = container.classList.contains('open');
+  container.classList.toggle('open', !isOpen);
+  toggle.classList.toggle('open', !isOpen);
 }
 
 // ── Record badges on import buttons ────────────────────────
@@ -810,3 +829,4 @@ window.clearSearch = clearSearch;
 window.switchTab = switchTab;
 window.deleteSource = deleteSource;
 window.toggleFilter = toggleFilter;
+window.toggleChips = toggleChips;
