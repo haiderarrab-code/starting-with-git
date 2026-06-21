@@ -194,7 +194,92 @@ function handleExcelFiles(e) {
   const files = Array.from(e.target.files);
   if (!files.length) return;
   e.target.value = '';
-  files.forEach(file => parseExcelFile(file, 'excel'));
+  files.forEach(file => {
+    if (/\.docx$/i.test(file.name)) parseWordFile(file);
+    else parseExcelFile(file, 'excel');
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+//  WORD (.docx) TABLE HANDLER
+// ═══════════════════════════════════════════════════════════
+async function parseWordFile(file) {
+  if (typeof JSZip === 'undefined') {
+    notify('مكتبة JSZip غير متاحة', 'error'); return;
+  }
+  showProgress(`جاري قراءة "${file.name}"...`, 20);
+  try {
+    const buf = await file.arrayBuffer();
+    const zip = await JSZip.loadAsync(buf);
+    const xmlFile = zip.file('word/document.xml');
+    if (!xmlFile) throw new Error('ملف Word غير صالح أو تالف');
+
+    showProgress(`جاري تحليل الجداول...`, 60);
+    await new Promise(r => setTimeout(r, 0));
+
+    const xmlText = await xmlFile.async('string');
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(xmlText, 'application/xml');
+
+    const NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+    const tbls = doc.getElementsByTagNameNS(NS, 'tbl');
+
+    if (!tbls.length) {
+      hideProgress();
+      notify(`${file.name}: لا توجد جداول في الملف.`, 'warning');
+      return;
+    }
+
+    const tables = [];
+    for (let ti = 0; ti < tbls.length; ti++) {
+      const tbl = tbls[ti];
+      const rows = tbl.getElementsByTagNameNS(NS, 'tr');
+      if (!rows.length) continue;
+
+      // استخدم الصف الأول كأعمدة
+      const getCellText = cell => {
+        const texts = cell.getElementsByTagNameNS(NS, 't');
+        return Array.from(texts).map(t => t.textContent).join('').trim();
+      };
+
+      const firstRow = Array.from(rows[0].getElementsByTagNameNS(NS, 'tc'));
+      const columns = firstRow.map((c, i) => getCellText(c) || `عمود ${i + 1}`);
+
+      const dataRows = [];
+      for (let ri = 1; ri < rows.length; ri++) {
+        const cells = Array.from(rows[ri].getElementsByTagNameNS(NS, 'tc'));
+        const rowObj = {};
+        columns.forEach((col, ci) => {
+          rowObj[col] = cells[ci] ? getCellText(cells[ci]) : '';
+        });
+        dataRows.push(rowObj);
+      }
+
+      if (dataRows.length) {
+        tables.push({ name: `جدول ${ti + 1}`, columns, rows: dataRows });
+      }
+    }
+
+    if (!tables.length) {
+      hideProgress();
+      notify(`${file.name}: الجداول فارغة.`, 'warning');
+      return;
+    }
+
+    addSource({
+      name: file.name,
+      type: 'excel',
+      tables,
+      totalRows: tables.reduce((s, t) => s + t.rows.length, 0),
+    });
+
+    showProgress('تم التحميل ✓', 100);
+    await new Promise(r => setTimeout(r, 600));
+    hideProgress();
+  } catch (err) {
+    hideProgress();
+    notify(`خطأ في قراءة "${file.name}": ${err.message}`, 'error');
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -204,7 +289,7 @@ async function handleFolderImport(e) {
   const all = Array.from(e.target.files);
   e.target.value = '';
 
-  const excelFiles = all.filter(f => /\.(xlsx|xls|csv|txt)$/i.test(f.name));
+  const excelFiles = all.filter(f => /\.(xlsx|xls|csv|txt|docx)$/i.test(f.name));
   if (!excelFiles.length) {
     notify('لا توجد ملفات Excel في المجلد المختار (.xlsx / .xls / .csv / .txt)', 'warning', 5000);
     return;
@@ -215,8 +300,11 @@ async function handleFolderImport(e) {
   showProgress(`جاري استيراد ${total} ملف...`, 0);
 
   // Fire all parses in parallel — Worker handles them off the main thread
-  const promises = excelFiles.map(file =>
-    parseExcelViaWorker(file, 'excel').then(result => {
+  const promises = excelFiles.map(file => {
+    if (/\.docx$/i.test(file.name)) {
+      return parseWordFile(file).then(() => { done++; showProgress(`جاري الاستيراد... ${done} / ${total}`, (done/total)*100); });
+    }
+    return parseExcelViaWorker(file, 'excel').then(result => {
       done++;
       const pct = (done / total) * 100;
       showProgress(`جاري الاستيراد... ${done} / ${total} — ${file.name}`, pct);

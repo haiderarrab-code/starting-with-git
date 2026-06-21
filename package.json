@@ -25,7 +25,8 @@
       "app.js",
       "xlsx-worker.js",
       "electron-main.js",
-      "vendor/xlsx.full.min.js"
+      "vendor/xlsx.full.min.js",
+      "vendor/jszip.min.js"
     ],
     "win": {
       "target": [

@@ -11,6 +11,7 @@
 
   <!-- Local libraries (work offline) -->
   <script src="vendor/xlsx.full.min.js"></script>
+  <script src="vendor/jszip.min.js"></script>
 </head>
 <body>
   <!-- ===== IMPORT PROGRESS ===== -->
@@ -90,7 +91,7 @@
             <span class="btn-plus">+</span>
             <span class="record-badge excel-badge" id="excelBadge" style="display:none"></span>
           </button>
-          <input type="file" id="excelFileInput" accept=".xlsx,.xls,.csv,.txt" style="display:none" multiple />
+          <input type="file" id="excelFileInput" accept=".xlsx,.xls,.csv,.txt,.docx" style="display:none" multiple />
           <button class="chips-toggle" id="chipsToggle" onclick="toggleChips()">
             <span id="chipsToggleLabel">عرض الملفات</span>
             <span class="chips-toggle-arrow">▼</span>
@@ -110,7 +111,7 @@
           </svg>
           استيراد مجلد Excel كامل
         </button>
-        <input type="file" id="folderFileInput" accept=".xlsx,.xls,.csv,.txt" webkitdirectory style="display:none" />
+        <input type="file" id="folderFileInput" accept=".xlsx,.xls,.csv,.txt,.docx" webkitdirectory style="display:none" />
         <span class="folder-hint">اختر مجلداً يحتوي على ملفات Excel — يتم استيراد جميع الملفات تلقائياً</span>
       </div>
     </section>
