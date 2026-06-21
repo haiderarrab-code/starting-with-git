@@ -18,7 +18,10 @@
   <div id="importProgress">
     <div class="progress-label">
       <strong id="progressTitle">جاري الاستيراد...</strong>
-      <span id="progressText">0%</span>
+      <div style="display:flex;align-items:center;gap:12px">
+        <span id="progressText">0%</span>
+        <button id="progressCancel" onclick="cancelImport()" title="إلغاء الاستيراد" style="background:none;border:none;cursor:pointer;color:var(--color-text-dim);font-size:1.1rem;line-height:1;padding:2px 4px;border-radius:4px;transition:color 0.2s">✕</button>
+      </div>
     </div>
     <div class="progress-track">
       <div class="progress-fill" id="progressFill"></div>

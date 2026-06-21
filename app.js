@@ -297,14 +297,19 @@ async function handleFolderImport(e) {
 
   let done = 0, errors = 0;
   const total = excelFiles.length;
+  _importCancelled = false;
   showProgress(`جاري استيراد ${total} ملف...`, 0);
 
   // Fire all parses in parallel — Worker handles them off the main thread
   const promises = excelFiles.map(file => {
     if (/\.docx$/i.test(file.name)) {
-      return parseWordFile(file).then(() => { done++; showProgress(`جاري الاستيراد... ${done} / ${total}`, (done/total)*100); });
+      return parseWordFile(file).then(() => {
+        if (_importCancelled) return;
+        done++; showProgress(`جاري الاستيراد... ${done} / ${total}`, (done/total)*100);
+      });
     }
     return parseExcelViaWorker(file, 'excel').then(result => {
+      if (_importCancelled) return;
       done++;
       const pct = (done / total) * 100;
       showProgress(`جاري الاستيراد... ${done} / ${total} — ${file.name}`, pct);
@@ -318,19 +323,21 @@ async function handleFolderImport(e) {
           totalRows: result.tables.reduce((s, t) => s + t.rows.length, 0),
         });
       }
-    })
-  );
+    });
+  });
 
   await Promise.all(promises);
-  hideProgress();
+  if (!_importCancelled) hideProgress();
   const ok = done - errors;
   notify(`تم استيراد ${ok} ملف بنجاح${errors ? ` (${errors} بها أخطاء)` : ''} ✓`, 'success', 5000);
 }
 
 // ── Single Excel file — via Worker ─────────────────────────
 async function parseExcelFile(file, type) {
+  _importCancelled = false;
   showProgress(`جاري قراءة "${file.name}"...`, 30);
   const result = await parseExcelViaWorker(file, type);
+  if (_importCancelled) return;
   showProgress(`جاري معالجة البيانات...`, 80);
   await new Promise(r => setTimeout(r, 0));
   if (result.error) {
@@ -852,7 +859,16 @@ function hideLoading() {
 }
 
 // ── Progress bar ────────────────────────────────────────────
+let _importCancelled = false;
+
+function cancelImport() {
+  _importCancelled = true;
+  hideProgress();
+  notify('تم إلغاء الاستيراد', 'info', 3000);
+}
+
 function showProgress(title, pct) {
+  if (_importCancelled) return;
   const bar = document.getElementById('importProgress');
   document.getElementById('progressTitle').textContent = title;
   document.getElementById('progressText').textContent = Math.round(pct) + '%';
@@ -860,6 +876,7 @@ function showProgress(title, pct) {
   bar.classList.add('visible');
 }
 function hideProgress() {
+  _importCancelled = false;
   document.getElementById('importProgress').classList.remove('visible');
   document.getElementById('progressFill').style.width = '0%';
 }
@@ -939,3 +956,4 @@ window.deleteSource = deleteSource;
 window.toggleFilter = toggleFilter;
 window.toggleChips = toggleChips;
 window.toggleFilters = toggleFilters;
+window.cancelImport = cancelImport;
