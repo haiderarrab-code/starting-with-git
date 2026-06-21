@@ -5,8 +5,12 @@ const express = require('express');
 const path = require('path');
 const http = require('http');
 
+// Increase JS heap limit for large Excel imports
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096');
+
 let server = null;
 let serverPort = 0;
+let win = null;
 
 // Start an internal static server so Web Workers + wasm load like a normal site
 function startServer() {
@@ -24,7 +28,7 @@ function startServer() {
 async function createWindow() {
   const port = await startServer();
 
-  const win = new BrowserWindow({
+  win = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 900,
@@ -41,6 +45,19 @@ async function createWindow() {
   Menu.setApplicationMenu(null);
 
   win.loadURL(`http://127.0.0.1:${port}/index.html`);
+
+  // If renderer crashes, reload instead of showing blank screen
+  win.webContents.on('render-process-gone', (event, details) => {
+    console.error('Renderer crashed:', details.reason);
+    setTimeout(() => win.loadURL(`http://127.0.0.1:${port}/index.html`), 1000);
+  });
+
+  win.webContents.on('unresponsive', () => {
+    // Give it 10 seconds to recover before reloading
+    setTimeout(() => {
+      if (win && !win.isDestroyed()) win.webContents.reload();
+    }, 10000);
+  });
 
   // Open external links in the system browser, not inside the app
   win.webContents.setWindowOpenHandler(({ url }) => {

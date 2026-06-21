@@ -39,6 +39,11 @@ function getWorker() {
 // Initialise worker early so it's warm by the time the user picks a file
 getWorker();
 
+function restartWorker() {
+  if (_xlsxWorker) { _xlsxWorker.terminate(); _xlsxWorker = null; _workerReady = false; }
+  getWorker();
+}
+
 function parseExcelOnMainThread(buffer, name) {
   try {
     const wb = XLSX.read(buffer, { type: 'array', cellDates: true, WTF: false });
@@ -328,6 +333,8 @@ async function handleFolderImport(e) {
             totalRows: result.tables.reduce((s, t) => s + t.rows.length, 0),
           });
         }
+        // Free Worker memory every 5 files to prevent crash
+        if ((done + 1) % 5 === 0) restartWorker();
       }
     } catch(err) {
       errors++;
