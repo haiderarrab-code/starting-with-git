@@ -15,8 +15,15 @@ function initDataWorker() {
   _dataWorker = new Worker('data-worker.js');
   _dataWorker.onmessage = e => {
     const msg = e.data;
-    if (msg.type === 'ready') { _workerReady = true; return; }
-    if (msg.op === 'ready')   { _workerReady = true; return; }
+    if (msg.type === 'ready') {
+      _workerReady = true;
+      restoreSources(msg.sources || []);   // metadata restored from IndexedDB
+      return;
+    }
+    if (msg.op === 'store_progress') {      // live write-to-disk progress
+      onStoreProgress(msg);
+      return;
+    }
     const p = _pending.get(msg.id);
     if (p) { _pending.delete(msg.id); p.resolve(msg); }
   };
@@ -62,49 +69,14 @@ function recreateParseWorker() {
   initParseWorker();
 }
 
-function parseWorkerSend(buffer, name, transfer) {
-  return new Promise((resolve, reject) => {
-    const id = ++_parseMsgId;
-    _parsePending.set(id, { resolve, reject });
-    _parseWorker.postMessage({ id, buffer, name }, transfer || []);
-  });
-}
+// Parse a file: rows flow parse-worker → data-worker directly via MessageChannel
+// then get written to IndexedDB. The renderer never holds any row data.
+//   opts.maxRows   — limit rows read (partial import); 0 = all
+//   opts.noTimeout — for explicit "full import", never auto-skip (user chose it)
+async function parseFile(file, opts = {}) {
+  const maxRows   = opts.maxRows || 0;
+  const noTimeout = !!opts.noTimeout;
 
-// Parse one buffer with a hard timeout. On timeout / abort the parse worker
-// is destroyed and recreated so the next file gets a clean worker.
-function parseWithTimeout(buffer, name) {
-  return new Promise((resolve, reject) => {
-    let done = false;
-    const finish = (fn, arg) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      _currentParseAbort = null;
-      fn(arg);
-    };
-    const timer = setTimeout(() => {
-      recreateParseWorker();
-      finish(reject, new Error('TIMEOUT'));
-    }, PARSE_TIMEOUT);
-
-    // Allow skip/cancel buttons to abort the current parse immediately.
-    _currentParseAbort = () => {
-      recreateParseWorker();
-      finish(reject, new Error('ABORTED'));
-    };
-
-    parseWorkerSend(buffer, name, [buffer])
-      .then(msg => {
-        if (msg.error) finish(reject, new Error(msg.error));
-        else           finish(resolve, msg.tables || []);
-      })
-      .catch(err => finish(reject, err));
-  });
-}
-
-// Parse a file: rows flow parse-worker → data-worker directly via MessageChannel.
-// The renderer never holds or transfers any row data.
-async function parseFile(file) {
   const isTxt = /\.txt$/i.test(file.name);
   let buffer;
   if (isTxt) {
@@ -120,30 +92,30 @@ async function parseFile(file) {
   }
 
   const sourceId = uid();
+  _activeStoreSourceId = sourceId;   // for store-progress display
 
-  // Create a direct pipe between the two workers.
+  // Direct pipe between the two workers.
   const { port1, port2 } = new MessageChannel();
 
-  // Tell data-worker to listen on port1 and store whatever arrives.
   const storeId = ++_workerMsgId;
   const storePromise = new Promise((resolve, reject) => {
     _pending.set(storeId, { resolve, reject });
   });
-  _dataWorker.postMessage({ op: 'listen_port', id: storeId, sourceId, name: file.name, port: port1 }, [port1]);
+  _dataWorker.postMessage({ op: 'listen_port', id: storeId, sourceId, name: file.name,
+    type: 'excel', color: TYPE_COLOR.excel, port: port1 }, [port1]);
 
-  // Tell parse-worker to parse the buffer and send results to data-worker via port2.
-  // Kill it (and reject storePromise) if it doesn't finish within PARSE_TIMEOUT.
   return new Promise((resolve, reject) => {
     let done = false;
     const finish = (fn, arg) => {
       if (done) return;
       done = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       _currentParseAbort = null;
       fn(arg);
     };
 
-    const timer = setTimeout(() => {
+    // Full-import mode has no auto-skip — the user explicitly asked for it.
+    const timer = noTimeout ? null : setTimeout(() => {
       recreateParseWorker();
       _pending.delete(storeId);
       finish(reject, new Error('TIMEOUT'));
@@ -155,18 +127,18 @@ async function parseFile(file) {
       finish(reject, new Error('ABORTED'));
     };
 
-    // When data-worker finishes indexing, we're done.
     storePromise.then(msg => finish(resolve, msg)).catch(err => finish(reject, err));
 
-    // Kick parse-worker (buffer + port2 transferred zero-copy).
     const parseId = ++_parseMsgId;
     _parsePending.set(parseId, {
       resolve: msg => { if (msg.error) { _pending.delete(storeId); finish(reject, new Error(msg.error)); } },
       reject:  err => { _pending.delete(storeId); finish(reject, err); },
     });
-    _parseWorker.postMessage({ id: parseId, buffer, name: file.name, port: port2 }, [buffer, port2]);
+    _parseWorker.postMessage({ id: parseId, buffer, name: file.name, port: port2, maxRows }, [buffer, port2]);
   });
 }
+
+let _activeStoreSourceId = null;
 
 // ── State (metadata only — no rows) ──────────────────────────
 const state = {
@@ -188,10 +160,9 @@ function uid() { return 'src_' + (++_uid); }
 //  INIT
 // ═══════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
-  initDataWorker();
+  initDataWorker();   // restoreSources() runs when the worker reports ready
   initParseWorker();
   initTheme();
-  loadFromStorage();
   renderAll();
 
   let _searchTimer = null;
@@ -260,13 +231,55 @@ async function handleFolderImport(e) {
   await importFileList(files);
 }
 
+// ── Big-file handling config ──────────────────────────────────
+const BIG_FILE_BYTES = 30 * 1024 * 1024;  // ask the user above 30 MB
+const PARTIAL_ROWS    = 120_000;          // rows imported in "partial" mode
+let   _bigFileChoiceForAll = null;        // 'full' | 'partial' | 'skip' | null
+
+// Ask the user what to do with one big file. Resolves to 'full'|'partial'|'skip'.
+function askBigFile(file) {
+  if (_bigFileChoiceForAll) return Promise.resolve(_bigFileChoiceForAll);
+  return new Promise(resolve => {
+    const modal = document.getElementById('bigFileModal');
+    const mb = (file.size / 1024 / 1024).toFixed(0);
+    document.getElementById('bigFileMsg').innerHTML =
+      `الملف <strong>${esc(file.name)}</strong> حجمه <strong>${mb} ميغابايت</strong>.<br>كيف تريد استيراده؟`;
+    document.getElementById('bigFileApplyAll').checked = false;
+    modal.style.display = 'flex';
+
+    const finish = choice => {
+      modal.style.display = 'none';
+      if (document.getElementById('bigFileApplyAll').checked) _bigFileChoiceForAll = choice;
+      document.getElementById('bigFileFull').onclick = null;
+      document.getElementById('bigFilePartial').onclick = null;
+      document.getElementById('bigFileSkip').onclick = null;
+      resolve(choice);
+    };
+    document.getElementById('bigFileFull').onclick    = () => finish('full');
+    document.getElementById('bigFilePartial').onclick = () => finish('partial');
+    document.getElementById('bigFileSkip').onclick    = () => finish('skip');
+  });
+}
+
+// Decide parse options for a file (may show the dialog). null = skip.
+async function decideOptions(file) {
+  if (file.size <= BIG_FILE_BYTES || /\.docx$/i.test(file.name)) return { maxRows: 0, noTimeout: false };
+  const choice = await askBigFile(file);
+  if (choice === 'skip')    return null;
+  if (choice === 'partial') return { maxRows: PARTIAL_ROWS, noTimeout: false };
+  return { maxRows: 0, noTimeout: true };   // full: import everything, never auto-skip
+}
+
 // ── Single file ───────────────────────────────────────────────
 async function importSingleFile(file) {
   _importCancelled = false;
   _importSkip      = false;
+  _bigFileChoiceForAll = null;
+  const opts = await decideOptions(file);
+  if (!opts) return;   // user chose skip
   showProgress(`جاري قراءة "${file.name}"...`, 30);
   try {
-    const msg = await parseFile(file);
+    const msg = await parseFile(file, opts);
     if (_importCancelled || _importSkip) { hideProgress(); return; }
     if (msg.error) {
       hideProgress();
@@ -275,7 +288,6 @@ async function importSingleFile(file) {
       addSource({ id: msg.sourceId, name: msg.name, type: 'excel',
         tables: msg.tables, totalRows: msg.tables.reduce((s, t) => s + t.totalRows, 0) });
       renderAll();
-      scheduleSave();
       showProgress('تم التحميل ✓', 100);
       await sleep(500);
       hideProgress();
@@ -293,18 +305,11 @@ async function importFileList(files) {
   const total = files.length;
   _importCancelled = false;
   _importSkip      = false;
+  _bigFileChoiceForAll = null;
   showProgress(`جاري استيراد ${total} ملف...`, 0);
-
-  const MAX_ROWS = 500_000;
 
   for (const file of files) {
     if (_importCancelled) break;
-
-    const currentTotal = state.sources.reduce((s, src) => s + src.totalRows, 0);
-    if (currentTotal >= MAX_ROWS) {
-      notify(`وصلت للحد الأقصى (${MAX_ROWS.toLocaleString('ar')} سجل).`, 'warning', 6000);
-      break;
-    }
 
     _importSkip = false;
     showProgress(`(${done + 1}/${total}) ${file.name}`, (done / total) * 100);
@@ -312,14 +317,24 @@ async function importFileList(files) {
     if (_importSkip) { skipped++; done++; continue; }
     if (_importCancelled) break;
 
+    // Decide full / partial / skip for big files (may pause for user input).
+    let opts = { maxRows: 0, noTimeout: false };
+    if (!/\.docx$/i.test(file.name)) {
+      opts = await decideOptions(file);
+      if (!opts) { skipped++; done++; continue; }   // user skipped this file
+      if (_importCancelled) break;
+    }
+
     // Live elapsed-time tick so a heavy file never looks frozen.
     const _started = Date.now();
     const _tick = setInterval(() => {
+      if (Date.now() - _lastStoreProgressAt < 1500) return; // disk-write msg has priority
       const secs = Math.round((Date.now() - _started) / 1000);
       if (secs >= 2 && !_importCancelled) {
-        const left = Math.max(0, Math.ceil((PARSE_TIMEOUT - (Date.now() - _started)) / 1000));
-        document.getElementById('progressTitle').textContent =
-          `(${done + 1}/${total}) ${file.name} — ⏳ ${secs}ث (تخطٍّ تلقائي بعد ${left}ث)`;
+        const tail = opts.noTimeout
+          ? `⏳ ${secs}ث (استيراد كامل — انتظر)`
+          : `⏳ ${secs}ث (تخطٍّ تلقائي بعد ${Math.max(0, Math.ceil((PARSE_TIMEOUT - (Date.now() - _started)) / 1000))}ث)`;
+        document.getElementById('progressTitle').textContent = `(${done + 1}/${total}) ${file.name} — ${tail}`;
       }
     }, 1000);
 
@@ -327,7 +342,7 @@ async function importFileList(files) {
       if (/\.docx$/i.test(file.name)) {
         await parseWordFile(file);
       } else {
-        const msg = await parseFile(file);
+        const msg = await parseFile(file, opts);
         if (_importSkip) { skipped++; done++; continue; }
         if (msg.error) {
           errors++;
@@ -353,7 +368,6 @@ async function importFileList(files) {
   }
 
   renderAll();
-  scheduleSave();
   if (!_importCancelled) hideProgress();
 
   const ok = done - errors - skipped;
@@ -457,40 +471,27 @@ function clearAll() {
 }
 
 // ═══════════════════════════════════════════════════════════
-//  STORAGE  (metadata + first 200 rows per table for preview)
+//  STORAGE  — IndexedDB is the single source of truth (in the worker).
+//  Metadata is restored from the worker on startup; rows persist on disk.
 // ═══════════════════════════════════════════════════════════
-let _saveTimer = null;
-function scheduleSave() {
-  clearTimeout(_saveTimer);
-  _saveTimer = setTimeout(saveToStorage, 2000);
-}
+function scheduleSave() {}   // no-op: the worker persists meta + rows itself
+function saveToStorage()  {}
 
-function saveToStorage() {
-  try {
-    const slim = state.sources.map(s => ({
-      id: s.id, name: s.name, type: s.type, color: s.color, totalRows: s.totalRows,
-      tables: s.tables.map(t => ({ name: t.name, columns: t.columns, totalRows: t.totalRows })),
-    }));
-    localStorage.setItem('uds_sources_meta', JSON.stringify(slim));
-  } catch(e) {
-    try { localStorage.removeItem('uds_sources_meta'); } catch(_) {}
-  }
-}
-
-function loadFromStorage() {
-  try {
-    const raw = localStorage.getItem('uds_sources_meta');
-    if (!raw) return;
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      state.sources = parsed.map(s => ({ color: TYPE_COLOR[s.type] || '#16a34a', ...s }));
-      // Note: rows are gone after restart — data-worker is empty.
-      // Sources show as "cached" with 0 rows available until reimported.
-      // We mark them so user knows.
-      for (const s of state.sources) s._cached = true;
-    }
-  } catch(e) {
-    try { localStorage.removeItem('uds_sources_meta'); } catch(_) {}
+// Rebuild state.sources from the metadata the worker loaded out of IndexedDB.
+function restoreSources(metas) {
+  state.sources = (metas || []).map(m => ({
+    id: m.sourceId,
+    name: m.name,
+    type: m.type || 'excel',
+    color: m.color || TYPE_COLOR[m.type] || '#16a34a',
+    tables: m.tables,
+    totalRows: m.tables.reduce((s, t) => s + t.totalRows, 0),
+  }));
+  state.activeTab = 'all';
+  renderAll();
+  if (state.sources.length) {
+    const recs = state.sources.reduce((s, x) => s + x.totalRows, 0);
+    notify(`تم استرجاع ${state.sources.length} مصدر (${recs.toLocaleString('ar')} سجل) من الذاكرة الدائمة`, 'info', 4000);
   }
 }
 
@@ -712,8 +713,8 @@ function renderSearchResults(activeSrcs, q, container) {
       _vtState.set(vtId, {
         sourceId: g.sourceId, tableName: g.tableName, columns: g.columns,
         totalRows: g.rows.length, query: q,
-        cache: new Map([[0, g.rows]]), // search results arrive all at once
-        loading: new Set(),
+        searchRows: g.rows,            // all matching rows are here (capped) — no worker fetch
+        cache: new Map(), loading: new Set(),
       });
       html += tableShellHTMLById(vtId, src, tableMeta, g.rows.length, q);
     }
@@ -773,7 +774,10 @@ function mountVirtualTables() {
 
       // Which page covers startRow?
       const pageKey = Math.floor(startRow / VT_PAGE) * VT_PAGE;
-      const rows    = st.cache.get(pageKey);
+      // Search rows are all in memory — slice directly, no worker fetch.
+      const rows = st.searchRows
+        ? st.searchRows.slice(pageKey, pageKey + VT_PAGE * 2)
+        : st.cache.get(pageKey);
 
       if (!rows) {
         // Fetch this page from worker
@@ -883,6 +887,16 @@ function cancelImport() {
 function skipImport() {
   _importSkip = true;
   if (_currentParseAbort) _currentParseAbort();    // abort the stuck file immediately
+}
+
+// Live "writing to disk" progress while a parsed file is saved to IndexedDB.
+let _lastStoreProgressAt = 0;
+function onStoreProgress(msg) {
+  if (_importCancelled || msg.sourceId !== _activeStoreSourceId) return;
+  _lastStoreProgressAt = Date.now();
+  const pct = msg.total ? Math.round((msg.written / msg.total) * 100) : 0;
+  const t = document.getElementById('progressTitle');
+  if (t) t.textContent = `💾 حفظ "${msg.name}" — ${msg.written.toLocaleString('ar')} / ${msg.total.toLocaleString('ar')} صف (${pct}%)`;
 }
 
 function showProgress(title, pct) {

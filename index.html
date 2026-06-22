@@ -29,6 +29,22 @@
     </div>
   </div>
 
+  <!-- ===== BIG FILE DECISION MODAL ===== -->
+  <div id="bigFileModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.6);align-items:center;justify-content:center">
+    <div style="background:var(--color-surface,#1e293b);border:1px solid var(--color-border,#334155);border-radius:14px;max-width:440px;width:90%;padding:24px;box-shadow:0 20px 60px rgba(0,0,0,0.5)">
+      <h3 style="margin:0 0 6px;color:var(--color-text,#e2e8f0);font-size:1.05rem">ملف كبير</h3>
+      <p id="bigFileMsg" style="margin:0 0 18px;color:var(--color-text-muted,#94a3b8);font-size:0.85rem;line-height:1.7"></p>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <button id="bigFileFull"    style="background:#16a34a;color:#fff;border:none;padding:11px;border-radius:9px;font-family:inherit;font-size:0.9rem;cursor:pointer">استيراد كامل (قد يأخذ وقتاً)</button>
+        <button id="bigFilePartial" style="background:#6366f1;color:#fff;border:none;padding:11px;border-radius:9px;font-family:inherit;font-size:0.9rem;cursor:pointer">استيراد أول 120 ألف صف (سريع)</button>
+        <button id="bigFileSkip"    style="background:none;color:#ef4444;border:1px solid #ef4444;padding:11px;border-radius:9px;font-family:inherit;font-size:0.9rem;cursor:pointer">تخطّي هذا الملف</button>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:16px;color:var(--color-text-muted,#94a3b8);font-size:0.8rem;cursor:pointer">
+        <input type="checkbox" id="bigFileApplyAll" /> طبّق نفس الاختيار على بقية الملفات الكبيرة
+      </label>
+    </div>
+  </div>
+
   <!-- ===== HEADER ===== -->
   <header class="app-header">
     <div class="header-inner">

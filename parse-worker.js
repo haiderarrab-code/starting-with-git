@@ -1,36 +1,37 @@
 /* parse-worker.js — disposable Excel/CSV parser.
-   Parses one buffer at a time and posts results DIRECTLY to data-worker
-   via a MessageChannel port (rows never pass through the renderer heap).
+   Parses one buffer and posts the parsed tables DIRECTLY to data-worker via a
+   MessageChannel port (rows never pass through the renderer heap).
+   `maxRows` limits how many rows are read per sheet (partial import = fast).
 */
 'use strict';
 
 importScripts('vendor/xlsx.full.min.js');
 
-const ROW_LIMIT = 120000;
-
 self.postMessage({ type: 'ready' });
 
 self.onmessage = function (e) {
-  const { id, buffer, name, port } = e.data;
+  const { id, buffer, name, port, maxRows } = e.data;
   try {
-    const wb = XLSX.read(buffer, { type: 'array', cellDates: true, WTF: false });
+    const opts = { type: 'array', cellDates: true, WTF: false };
+    // sheetRows limits parsing to the first N data rows (+ header) → faster, less memory.
+    if (maxRows && maxRows > 0) opts.sheetRows = maxRows + 1;
+
+    const wb = XLSX.read(buffer, opts);
     const tables = wb.SheetNames.map(sheetName => {
       try {
         const json = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: '' });
         if (!json.length) return null;
-        const rows    = json.slice(0, ROW_LIMIT);
+        const rows = (maxRows && maxRows > 0) ? json.slice(0, maxRows) : json;
         const columns = Object.keys(json[0]);
         return { name: sheetName, columns, rows };
       } catch { return null; }
     }).filter(Boolean);
 
-    // Send parsed tables DIRECTLY to data-worker via the port (zero renderer involvement).
     port.postMessage({ tables, error: null });
     port.close();
-    self.postMessage({ id, error: null });           // tell renderer parse is done
+    self.postMessage({ id, error: null });
   } catch (err) {
-    port.postMessage({ tables: null, error: err.message });
-    port.close();
+    try { port.postMessage({ tables: null, error: err.message }); port.close(); } catch (_) {}
     self.postMessage({ id, error: err.message });
   }
 };
