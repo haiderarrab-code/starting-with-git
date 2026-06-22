@@ -34,8 +34,75 @@ function workerSend(payload, transfer) {
   });
 }
 
-// ── xlsx parsing lives here — no separate xlsx-worker needed ─
-// We send the raw buffer straight to data-worker which uses XLSX internally.
+// ── Disposable parse worker (recoverable if a file hangs XLSX.read) ──
+let _parseWorker     = null;
+let _parseMsgId      = 0;
+const _parsePending  = new Map();   // id -> { resolve, reject }
+const PARSE_TIMEOUT  = 30000;       // ms before we give up on a single file
+let _currentParseAbort = null;      // abort fn for the in-flight parse
+
+function initParseWorker() {
+  _parseWorker = new Worker('parse-worker.js');
+  _parseWorker.onmessage = e => {
+    const msg = e.data;
+    if (msg.type === 'ready') return;
+    const p = _parsePending.get(msg.id);
+    if (p) { _parsePending.delete(msg.id); p.resolve(msg); }
+  };
+  _parseWorker.onerror = () => {
+    for (const [id, p] of _parsePending) { _parsePending.delete(id); p.reject(new Error('parse-worker error')); }
+  };
+}
+
+// Kill the parse worker (aborts whatever it's stuck on) and start a fresh one.
+// Data already stored in data-worker is NOT affected.
+function recreateParseWorker() {
+  try { if (_parseWorker) _parseWorker.terminate(); } catch (_) {}
+  for (const [id, p] of _parsePending) { _parsePending.delete(id); p.reject(new Error('aborted')); }
+  initParseWorker();
+}
+
+function parseWorkerSend(buffer, name, transfer) {
+  return new Promise((resolve, reject) => {
+    const id = ++_parseMsgId;
+    _parsePending.set(id, { resolve, reject });
+    _parseWorker.postMessage({ id, buffer, name }, transfer || []);
+  });
+}
+
+// Parse one buffer with a hard timeout. On timeout / abort the parse worker
+// is destroyed and recreated so the next file gets a clean worker.
+function parseWithTimeout(buffer, name) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = (fn, arg) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      _currentParseAbort = null;
+      fn(arg);
+    };
+    const timer = setTimeout(() => {
+      recreateParseWorker();
+      finish(reject, new Error('TIMEOUT'));
+    }, PARSE_TIMEOUT);
+
+    // Allow skip/cancel buttons to abort the current parse immediately.
+    _currentParseAbort = () => {
+      recreateParseWorker();
+      finish(reject, new Error('ABORTED'));
+    };
+
+    parseWorkerSend(buffer, name, [buffer])
+      .then(msg => {
+        if (msg.error) finish(reject, new Error(msg.error));
+        else           finish(resolve, msg.tables || []);
+      })
+      .catch(err => finish(reject, err));
+  });
+}
+
+// Parse a file → store rows in data-worker → return stored metadata.
 async function parseFile(file) {
   const isTxt = /\.txt$/i.test(file.name);
   let buffer;
@@ -50,9 +117,13 @@ async function parseFile(file) {
   } else {
     buffer = await file.arrayBuffer();
   }
+
+  // 1) Parse in the disposable worker (can time out without freezing import)
+  const tables = await parseWithTimeout(buffer, file.name);
+
+  // 2) Hand the parsed rows to the storage worker (builds search index)
   const sourceId = uid();
-  // Transfer the buffer to the worker (zero-copy)
-  return workerSend({ op: 'parse', sourceId, buffer, name: file.name }, [buffer]);
+  return workerSend({ op: 'store', sourceId, name: file.name, tables });
 }
 
 // ── State (metadata only — no rows) ──────────────────────────
@@ -76,6 +147,7 @@ function uid() { return 'src_' + (++_uid); }
 // ═══════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
   initDataWorker();
+  initParseWorker();
   initTheme();
   loadFromStorage();
   renderAll();
@@ -213,8 +285,12 @@ async function importFileList(files) {
         }
       }
     } catch (err) {
-      errors++;
-      failedFiles.push(file.name);
+      if (_importSkip || err.message === 'ABORTED') {
+        skipped++;
+      } else {
+        errors++;
+        failedFiles.push(file.name + (err.message === 'TIMEOUT' ? ' (تجاوز الوقت المسموح)' : ''));
+      }
     }
     done++;
   }
@@ -741,8 +817,16 @@ async function exportUnified() {
 let _importCancelled = false;
 let _importSkip      = false;
 
-function cancelImport() { _importCancelled = true; hideProgress(); notify('تم إلغاء الاستيراد', 'info', 3000); }
-function skipImport()   { _importSkip = true; }
+function cancelImport() {
+  _importCancelled = true;
+  if (_currentParseAbort) _currentParseAbort();   // abort the file being parsed right now
+  hideProgress();
+  notify('تم إلغاء الاستيراد', 'info', 3000);
+}
+function skipImport() {
+  _importSkip = true;
+  if (_currentParseAbort) _currentParseAbort();    // abort the stuck file immediately
+}
 
 function showProgress(title, pct) {
   if (_importCancelled) return;

@@ -24,6 +24,7 @@
       "style.css",
       "app.js",
       "data-worker.js",
+      "parse-worker.js",
       "electron-main.js",
       "vendor/xlsx.full.min.js",
       "vendor/jszip.min.js"
