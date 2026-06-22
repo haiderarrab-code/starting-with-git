@@ -312,6 +312,17 @@ async function importFileList(files) {
     if (_importSkip) { skipped++; done++; continue; }
     if (_importCancelled) break;
 
+    // Live elapsed-time tick so a heavy file never looks frozen.
+    const _started = Date.now();
+    const _tick = setInterval(() => {
+      const secs = Math.round((Date.now() - _started) / 1000);
+      if (secs >= 2 && !_importCancelled) {
+        const left = Math.max(0, Math.ceil((PARSE_TIMEOUT - (Date.now() - _started)) / 1000));
+        document.getElementById('progressTitle').textContent =
+          `(${done + 1}/${total}) ${file.name} — ⏳ ${secs}ث (تخطٍّ تلقائي بعد ${left}ث)`;
+      }
+    }, 1000);
+
     try {
       if (/\.docx$/i.test(file.name)) {
         await parseWordFile(file);
@@ -335,6 +346,8 @@ async function importFileList(files) {
         errors++;
         failedFiles.push(file.name + (err.message === 'TIMEOUT' ? ' (تجاوز الوقت المسموح)' : ''));
       }
+    } finally {
+      clearInterval(_tick);
     }
     done++;
   }
