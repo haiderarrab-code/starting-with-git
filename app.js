@@ -102,7 +102,8 @@ function parseWithTimeout(buffer, name) {
   });
 }
 
-// Parse a file → store rows in data-worker → return stored metadata.
+// Parse a file: rows flow parse-worker → data-worker directly via MessageChannel.
+// The renderer never holds or transfers any row data.
 async function parseFile(file) {
   const isTxt = /\.txt$/i.test(file.name);
   let buffer;
@@ -118,12 +119,53 @@ async function parseFile(file) {
     buffer = await file.arrayBuffer();
   }
 
-  // 1) Parse in the disposable worker (can time out without freezing import)
-  const tables = await parseWithTimeout(buffer, file.name);
-
-  // 2) Hand the parsed rows to the storage worker (builds search index)
   const sourceId = uid();
-  return workerSend({ op: 'store', sourceId, name: file.name, tables });
+
+  // Create a direct pipe between the two workers.
+  const { port1, port2 } = new MessageChannel();
+
+  // Tell data-worker to listen on port1 and store whatever arrives.
+  const storeId = ++_workerMsgId;
+  const storePromise = new Promise((resolve, reject) => {
+    _pending.set(storeId, { resolve, reject });
+  });
+  _dataWorker.postMessage({ op: 'listen_port', id: storeId, sourceId, name: file.name, port: port1 }, [port1]);
+
+  // Tell parse-worker to parse the buffer and send results to data-worker via port2.
+  // Kill it (and reject storePromise) if it doesn't finish within PARSE_TIMEOUT.
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = (fn, arg) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      _currentParseAbort = null;
+      fn(arg);
+    };
+
+    const timer = setTimeout(() => {
+      recreateParseWorker();
+      _pending.delete(storeId);
+      finish(reject, new Error('TIMEOUT'));
+    }, PARSE_TIMEOUT);
+
+    _currentParseAbort = () => {
+      recreateParseWorker();
+      _pending.delete(storeId);
+      finish(reject, new Error('ABORTED'));
+    };
+
+    // When data-worker finishes indexing, we're done.
+    storePromise.then(msg => finish(resolve, msg)).catch(err => finish(reject, err));
+
+    // Kick parse-worker (buffer + port2 transferred zero-copy).
+    const parseId = ++_parseMsgId;
+    _parsePending.set(parseId, {
+      resolve: msg => { if (msg.error) { _pending.delete(storeId); finish(reject, new Error(msg.error)); } },
+      reject:  err => { _pending.delete(storeId); finish(reject, err); },
+    });
+    _parseWorker.postMessage({ id: parseId, buffer, name: file.name, port: port2 }, [buffer, port2]);
+  });
 }
 
 // ── State (metadata only — no rows) ──────────────────────────

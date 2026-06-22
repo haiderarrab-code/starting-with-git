@@ -19,6 +19,7 @@ self.onmessage = function(e) {
     case 'parse':       return handleParse(msg);
     case 'parse_word':  return handleParseWord(msg);
     case 'store':       return handleStore(msg);
+    case 'listen_port': return handleListenPort(msg);
     case 'rows':        return handleGetRows(msg);
     case 'search':      return handleSearch(msg);
     case 'remove':  store.delete(msg.sourceId); self.postMessage({ op: 'removed', id: msg.id }); break;
@@ -53,7 +54,31 @@ function handleParse({ id, sourceId, buffer, name }) {
   }
 }
 
-// ── Store pre-parsed tables (from parse-worker) and build index ──
+// ── Receive a MessageChannel port from parse-worker; build index when rows arrive ──
+function handleListenPort({ id, sourceId, name, port }) {
+  port.onmessage = function (e) {
+    const { tables, error } = e.data;
+    if (error || !tables || !tables.length) {
+      self.postMessage({ op: 'stored', id, sourceId, name, error: error || 'empty', tables: null });
+      return;
+    }
+    try {
+      const stored = tables.map(t => ({
+        name: t.name, columns: t.columns, rows: t.rows,
+        _index: t.rows.map(r => Object.values(r).join('\x00').toLowerCase()),
+      }));
+      store.set(sourceId, stored);
+      self.postMessage({
+        op: 'stored', id, sourceId, name, error: null,
+        tables: stored.map(t => ({ name: t.name, columns: t.columns, totalRows: t.rows.length })),
+      });
+    } catch (err) {
+      self.postMessage({ op: 'stored', id, sourceId, name, error: err.message, tables: null });
+    }
+  };
+}
+
+// ── Store pre-parsed tables (fallback / Word files) and build index ──
 function handleStore({ id, sourceId, name, tables }) {
   try {
     const stored = (tables || []).map(t => ({

@@ -1,9 +1,6 @@
 /* parse-worker.js — disposable Excel/CSV parser.
-   This worker ONLY parses one buffer at a time and returns full rows.
-   It is intentionally separate from data-worker.js (the storage worker)
-   so that if a single corrupt / huge / password-protected file makes
-   XLSX.read hang, the renderer can terminate THIS worker and recreate it
-   without losing any data already stored in data-worker.
+   Parses one buffer at a time and posts results DIRECTLY to data-worker
+   via a MessageChannel port (rows never pass through the renderer heap).
 */
 'use strict';
 
@@ -14,7 +11,7 @@ const ROW_LIMIT = 120000;
 self.postMessage({ type: 'ready' });
 
 self.onmessage = function (e) {
-  const { id, buffer, name } = e.data;
+  const { id, buffer, name, port } = e.data;
   try {
     const wb = XLSX.read(buffer, { type: 'array', cellDates: true, WTF: false });
     const tables = wb.SheetNames.map(sheetName => {
@@ -26,8 +23,14 @@ self.onmessage = function (e) {
         return { name: sheetName, columns, rows };
       } catch { return null; }
     }).filter(Boolean);
-    self.postMessage({ id, name, tables, error: null });
+
+    // Send parsed tables DIRECTLY to data-worker via the port (zero renderer involvement).
+    port.postMessage({ tables, error: null });
+    port.close();
+    self.postMessage({ id, error: null });           // tell renderer parse is done
   } catch (err) {
-    self.postMessage({ id, name, tables: null, error: err.message });
+    port.postMessage({ tables: null, error: err.message });
+    port.close();
+    self.postMessage({ id, error: err.message });
   }
 };
