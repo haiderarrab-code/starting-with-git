@@ -1,9 +1,9 @@
 'use strict';
 
 const { app, BrowserWindow, Menu, shell } = require('electron');
-const express = require('express');
 const path = require('path');
 const http = require('http');
+const fs = require('fs');
 
 // Increase JS heap limit for large Excel imports
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096');
@@ -15,12 +15,40 @@ let server = null;
 let serverPort = 0;
 let win = null;
 
-// Start an internal static server so Web Workers + wasm load like a normal site
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js':   'text/javascript; charset=utf-8',
+  '.css':  'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.wasm': 'application/wasm',
+  '.svg':  'image/svg+xml',
+  '.png':  'image/png',
+  '.woff': 'font/woff',
+  '.woff2':'font/woff2',
+};
+
+// Internal static server using Node's built-in http (NO dependencies) so Web
+// Workers + wasm load over http like a normal site. Avoids any missing-module
+// black screen when packaged.
 function startServer() {
   return new Promise(resolve => {
-    const expApp = express();
-    expApp.use(express.static(__dirname));
-    server = http.createServer(expApp);
+    server = http.createServer((req, res) => {
+      try {
+        let urlPath = decodeURIComponent((req.url || '/').split('?')[0]);
+        if (urlPath === '/' || urlPath === '') urlPath = '/index.html';
+        const safePath = path.normalize(urlPath).replace(/^(\.\.[/\\])+/, '');
+        const filePath = path.join(__dirname, safePath);
+        if (!filePath.startsWith(__dirname)) { res.writeHead(403); res.end('forbidden'); return; }
+        fs.readFile(filePath, (err, data) => {
+          if (err) { res.writeHead(404); res.end('not found'); return; }
+          const ext = path.extname(filePath).toLowerCase();
+          res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+          res.end(data);
+        });
+      } catch (e) {
+        res.writeHead(500); res.end('error');
+      }
+    });
     server.listen(0, '127.0.0.1', () => {
       serverPort = server.address().port;
       resolve(serverPort);

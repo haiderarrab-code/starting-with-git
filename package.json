@@ -9,7 +9,6 @@
     "dist:portable": "electron-builder --win portable --x64"
   },
   "dependencies": {
-    "express": "^4.18.2",
     "playwright-core": "^1.61.0"
   },
   "devDependencies": {
