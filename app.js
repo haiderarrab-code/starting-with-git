@@ -324,6 +324,8 @@ async function importFileList(files) {
         } else if (msg.tables && msg.tables.length) {
           addSource({ id: msg.sourceId, name: msg.name, type: 'excel',
             tables: msg.tables, totalRows: msg.tables.reduce((s, t) => s + t.totalRows, 0) });
+          renderStatsBar();   // live counter feedback (cheap text update)
+          renderBadges();
         }
       }
     } catch (err) {
