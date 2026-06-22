@@ -218,11 +218,17 @@ async function handleExcelFiles(e) {
   _bulkMode = true;
   showProgress(`جاري استيراد ${total} ملف...`, 0);
 
+  const MAX_TOTAL_ROWS = 500_000;
   for (const file of files) {
     if (_importCancelled) break;
+    const currentTotal = state.sources.reduce((s, src) => s + src.totalRows, 0);
+    if (currentTotal >= MAX_TOTAL_ROWS) {
+      notify(`وصلت للحد الأقصى (${MAX_TOTAL_ROWS.toLocaleString('ar')} سجل).`, 'warning', 6000);
+      break;
+    }
     _importSkip = false;
     showProgress(`(${done + 1}/${total}) ${file.name}`, (done / total) * 100);
-    await new Promise(r => setTimeout(r, 50));
+    await new Promise(r => setTimeout(r, 10));
     if (_importSkip) { skipped++; done++; continue; }
     try {
       if (/\.docx$/i.test(file.name)) {
@@ -232,7 +238,6 @@ async function handleExcelFiles(e) {
         if (_importSkip) { skipped++; done++; continue; }
         if (result.error) {
           errors++;
-          notify(`خطأ في "${file.name}": ${result.error}`, 'error', 3000);
         } else if (result.tables && result.tables.length) {
           addSource({ name: result.name, type: 'excel',
             tables: result.tables,
@@ -358,14 +363,23 @@ async function handleFolderImport(e) {
   _bulkMode = true;
   showProgress(`جاري استيراد ${total} ملف...`, 0);
 
+  const MAX_TOTAL_ROWS = 500_000;
+
   for (const file of excelFiles) {
     if (_importCancelled) break;
+
+    // Stop if we're already holding too much data in memory
+    const currentTotal = state.sources.reduce((s, src) => s + src.totalRows, 0);
+    if (currentTotal >= MAX_TOTAL_ROWS) {
+      notify(`وصلت للحد الأقصى (${MAX_TOTAL_ROWS.toLocaleString('ar')} سجل). أوقف الاستيراد.`, 'warning', 6000);
+      break;
+    }
 
     _importSkip = false;
     showProgress(`(${done + 1}/${total}) ${file.name}`, (done / total) * 100);
 
-    // Wait briefly so UI updates and user can press skip
-    await new Promise(r => setTimeout(r, 50));
+    // Minimal wait so UI stays alive for skip/cancel buttons
+    await new Promise(r => setTimeout(r, 10));
     if (_importSkip) { skipped++; done++; continue; }
     if (_importCancelled) break;
 
@@ -479,8 +493,8 @@ function addSource(src) {
   state.activeTab = 'all';
 
   if (_bulkMode) {
-    // Index this source's tables in the background; defer render/save to end of batch
-    setTimeout(() => buildSearchIndexAsync(src.tables), 0);
+    // Don't build search index mid-batch — doing it per-file spawns dozens of
+    // concurrent setTimeout loops that exhaust memory. Build everything at finishBulkImport().
     return;
   }
 
@@ -492,11 +506,14 @@ function addSource(src) {
   setTimeout(() => buildSearchIndexAsync(src.tables), 50);
 }
 
-// Call after a bulk import finishes to flush the deferred render + save
+// Call after a bulk import finishes to flush the deferred render + save + index
 function finishBulkImport() {
   _bulkMode = false;
   renderAll();
   scheduleSave();
+  // Build all search indexes sequentially in the background (not concurrent)
+  const allTables = state.sources.flatMap(s => s.tables);
+  buildSearchIndexAsync(allTables);
 }
 
 function deleteSource(id) {
