@@ -195,14 +195,59 @@ function applyTheme(t) {
 // ═══════════════════════════════════════════════════════════
 //  EXCEL / CSV FILE HANDLER
 // ═══════════════════════════════════════════════════════════
-function handleExcelFiles(e) {
+async function handleExcelFiles(e) {
   const files = Array.from(e.target.files);
   if (!files.length) return;
   e.target.value = '';
-  files.forEach(file => {
-    if (/\.docx$/i.test(file.name)) parseWordFile(file);
-    else parseExcelFile(file, 'excel');
-  });
+
+  if (files.length === 1) {
+    // Single file — simple flow
+    const file = files[0];
+    _importCancelled = false;
+    _importSkip = false;
+    if (/\.docx$/i.test(file.name)) { await parseWordFile(file); return; }
+    await parseExcelFile(file, 'excel');
+    return;
+  }
+
+  // Multiple files — sequential with skip/cancel
+  let done = 0, skipped = 0, errors = 0;
+  const total = files.length;
+  _importCancelled = false;
+  _importSkip = false;
+  showProgress(`جاري استيراد ${total} ملف...`, 0);
+
+  for (const file of files) {
+    if (_importCancelled) break;
+    _importSkip = false;
+    showProgress(`(${done + 1}/${total}) ${file.name}`, (done / total) * 100);
+    await new Promise(r => setTimeout(r, 50));
+    if (_importSkip) { skipped++; done++; continue; }
+    try {
+      if (/\.docx$/i.test(file.name)) {
+        await parseWordFile(file);
+      } else {
+        const result = await parseExcelViaWorker(file, 'excel');
+        if (_importSkip) { skipped++; done++; continue; }
+        if (result.error) {
+          errors++;
+          notify(`خطأ في "${file.name}": ${result.error}`, 'error', 3000);
+        } else if (result.tables && result.tables.length) {
+          addSource({ name: result.name, type: 'excel',
+            tables: result.tables,
+            totalRows: result.tables.reduce((s, t) => s + t.rows.length, 0) });
+        }
+      }
+    } catch(err) { errors++; }
+    done++;
+  }
+
+  if (!_importCancelled) hideProgress();
+  const ok = done - errors - skipped;
+  const parts = [`تم استيراد ${ok} ملف بنجاح`];
+  if (skipped) parts.push(`${skipped} مُتخطى`);
+  if (errors) parts.push(`${errors} بها أخطاء`);
+  notify(parts.join(' — ') + ' ✓', 'success', 5000);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -301,6 +346,7 @@ async function handleFolderImport(e) {
   }
 
   let done = 0, skipped = 0, errors = 0;
+  const failedFiles = [];
   const total = excelFiles.length;
   _importCancelled = false;
   _importSkip = false;
@@ -325,7 +371,7 @@ async function handleFolderImport(e) {
         if (_importSkip) { skipped++; done++; continue; }
         if (result.error) {
           errors++;
-          notify(`خطأ في "${result.name}": ${result.error}`, 'error', 3000);
+          failedFiles.push(file.name);
         } else if (result.tables && result.tables.length) {
           addSource({
             name: result.name, type: 'excel',
@@ -338,6 +384,7 @@ async function handleFolderImport(e) {
       }
     } catch(err) {
       errors++;
+      failedFiles.push(file.name);
     }
     done++;
   }
@@ -346,18 +393,21 @@ async function handleFolderImport(e) {
   const ok = done - errors - skipped;
   const parts = [`تم استيراد ${ok} ملف بنجاح`];
   if (skipped) parts.push(`${skipped} مُتخطى`);
-  if (errors) parts.push(`${errors} بها أخطاء`);
-  notify(parts.join(' — ') + ' ✓', 'success', 5000);
+  if (errors) parts.push(`${errors} فشل`);
+  notify(parts.join(' — ') + ' ✓', errors ? 'warning' : 'success', 6000);
+  if (failedFiles.length) {
+    setTimeout(() => notify(`الملفات الفاشلة:\n${failedFiles.join('\n')}`, 'error', 8000), 1000);
+  }
 }
 
 // ── Single Excel file — via Worker ─────────────────────────
 async function parseExcelFile(file, type) {
-  _importCancelled = false;
-  showProgress(`جاري قراءة "${file.name}"...`, 30);
+  showProgress(`جاري قراءة "${file.name}"...`, 40);
   const result = await parseExcelViaWorker(file, type);
-  if (_importCancelled) return;
-  showProgress(`جاري معالجة البيانات...`, 80);
+  if (_importCancelled || _importSkip) { hideProgress(); return; }
+  showProgress(`جاري معالجة البيانات...`, 85);
   await new Promise(r => setTimeout(r, 0));
+  if (_importCancelled || _importSkip) { hideProgress(); return; }
   if (result.error) {
     hideProgress();
     notify(`خطأ في قراءة "${file.name}": ${result.error}`, 'error');
