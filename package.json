@@ -23,7 +23,7 @@
       "index.html",
       "style.css",
       "app.js",
-      "xlsx-worker.js",
+      "data-worker.js",
       "electron-main.js",
       "vendor/xlsx.full.min.js",
       "vendor/jszip.min.js"
