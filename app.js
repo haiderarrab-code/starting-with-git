@@ -215,6 +215,7 @@ async function handleExcelFiles(e) {
   const total = files.length;
   _importCancelled = false;
   _importSkip = false;
+  _bulkMode = true;
   showProgress(`جاري استيراد ${total} ملف...`, 0);
 
   for (const file of files) {
@@ -237,11 +238,13 @@ async function handleExcelFiles(e) {
             tables: result.tables,
             totalRows: result.tables.reduce((s, t) => s + t.rows.length, 0) });
         }
+        if ((done + 1) % 5 === 0) restartWorker();
       }
     } catch(err) { errors++; }
     done++;
   }
 
+  finishBulkImport();
   if (!_importCancelled) hideProgress();
   const ok = done - errors - skipped;
   const parts = [`تم استيراد ${ok} ملف بنجاح`];
@@ -275,7 +278,7 @@ async function parseWordFile(file) {
     const tbls = doc.getElementsByTagNameNS(NS, 'tbl');
 
     if (!tbls.length) {
-      hideProgress();
+      if (!_bulkMode) hideProgress();
       notify(`${file.name}: لا توجد جداول في الملف.`, 'warning');
       return;
     }
@@ -311,7 +314,7 @@ async function parseWordFile(file) {
     }
 
     if (!tables.length) {
-      hideProgress();
+      if (!_bulkMode) hideProgress();
       notify(`${file.name}: الجداول فارغة.`, 'warning');
       return;
     }
@@ -323,11 +326,13 @@ async function parseWordFile(file) {
       totalRows: tables.reduce((s, t) => s + t.rows.length, 0),
     });
 
-    showProgress('تم التحميل ✓', 100);
-    await new Promise(r => setTimeout(r, 600));
-    hideProgress();
+    if (!_bulkMode) {
+      showProgress('تم التحميل ✓', 100);
+      await new Promise(r => setTimeout(r, 600));
+      hideProgress();
+    }
   } catch (err) {
-    hideProgress();
+    if (!_bulkMode) hideProgress();
     notify(`خطأ في قراءة "${file.name}": ${err.message}`, 'error');
   }
 }
@@ -350,6 +355,7 @@ async function handleFolderImport(e) {
   const total = excelFiles.length;
   _importCancelled = false;
   _importSkip = false;
+  _bulkMode = true;
   showProgress(`جاري استيراد ${total} ملف...`, 0);
 
   for (const file of excelFiles) {
@@ -389,6 +395,7 @@ async function handleFolderImport(e) {
     done++;
   }
 
+  finishBulkImport();
   if (!_importCancelled) hideProgress();
   const ok = done - errors - skipped;
   const parts = [`تم استيراد ${ok} ملف بنجاح`];
@@ -429,12 +436,6 @@ async function parseExcelFile(file, type) {
 // ═══════════════════════════════════════════════════════════
 //  SOURCE MANAGEMENT
 // ═══════════════════════════════════════════════════════════
-function buildSearchIndex(tables) {
-  for (const t of tables) {
-    t._index = t.rows.map(r => Object.values(r).join('\x00').toLowerCase());
-  }
-}
-
 // Builds index in 500-row chunks using setTimeout so the UI stays responsive
 function buildSearchIndexAsync(tables, onDone) {
   const work = tables.map(t => ({ t, i: 0 }));
@@ -465,6 +466,10 @@ function scheduleSave() {
   _saveTimer = setTimeout(saveToStorage, 1500);
 }
 
+// During folder/multi import we suppress per-file render + save to avoid
+// O(n²) DOM thrash and memory spikes that crash the renderer.
+let _bulkMode = false;
+
 function addSource(src) {
   const existing = state.sources.findIndex(s => s.name === src.name);
   if (existing !== -1) state.sources.splice(existing, 1);
@@ -472,12 +477,26 @@ function addSource(src) {
   const id = uid();
   state.sources.push({ id, color: TYPE_COLOR[src.type], ...src });
   state.activeTab = 'all';
+
+  if (_bulkMode) {
+    // Index this source's tables in the background; defer render/save to end of batch
+    setTimeout(() => buildSearchIndexAsync(src.tables), 0);
+    return;
+  }
+
   renderAll();
   notify(`تم استيراد "${src.name}" بنجاح (${src.totalRows.toLocaleString('ar')} سجل)`, 'success');
 
   // Defer heavy work so the UI renders first
   scheduleSave();
   setTimeout(() => buildSearchIndexAsync(src.tables), 50);
+}
+
+// Call after a bulk import finishes to flush the deferred render + save
+function finishBulkImport() {
+  _bulkMode = false;
+  renderAll();
+  scheduleSave();
 }
 
 function deleteSource(id) {
@@ -507,17 +526,41 @@ function clearAll() {
 // ═══════════════════════════════════════════════════════════
 function saveToStorage() {
   try {
-    // Limit storage size: store up to 2000 rows per table
+    // Cap how much we persist so a big session can't exceed the storage
+    // quota (which would throw) or stall serialization. Strip the search
+    // index (_index) — it's rebuilt on load.
+    const PER_TABLE = 500;
     const slim = state.sources.map(s => ({
-      ...s,
+      id: s.id, name: s.name, type: s.type, color: s.color, totalRows: s.totalRows,
       tables: s.tables.map(t => ({
-        ...t,
-        rows: t.rows.slice(0, 2000),
+        name: t.name,
+        columns: t.columns,
+        rows: t.rows.slice(0, PER_TABLE),
       })),
     }));
-    localStorage.setItem('uds_sources', JSON.stringify(slim));
+
+    let payload = JSON.stringify(slim);
+    // If it's still very large, persist metadata only (no rows). Data stays
+    // in memory for this session; we just don't risk a quota crash.
+    if (payload.length > 4_000_000) {
+      const meta = slim.map(s => ({
+        id: s.id, name: s.name, type: s.type, color: s.color, totalRows: s.totalRows,
+        tables: s.tables.map(t => ({ name: t.name, columns: t.columns, rows: [] })),
+      }));
+      payload = JSON.stringify(meta);
+    }
+    localStorage.setItem('uds_sources', payload);
   } catch(e) {
-    // Storage quota exceeded — skip silently
+    // Quota exceeded — drop persisted rows entirely rather than crash-loop
+    try {
+      const meta = state.sources.map(s => ({
+        id: s.id, name: s.name, type: s.type, color: s.color, totalRows: s.totalRows,
+        tables: s.tables.map(t => ({ name: t.name, columns: t.columns, rows: [] })),
+      }));
+      localStorage.setItem('uds_sources', JSON.stringify(meta));
+    } catch(_) {
+      try { localStorage.removeItem('uds_sources'); } catch(__) {}
+    }
   }
 }
 
@@ -527,12 +570,18 @@ function loadFromStorage() {
     if (!raw) return;
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
-      state.sources = parsed.map(s => {
-        buildSearchIndex(s.tables || []);
-        return { color: TYPE_COLOR[s.type] || '#64748b', ...s };
-      });
+      // Don't build the search index synchronously here — with many sources
+      // that blocks the main thread on startup and can crash the renderer.
+      // Build it in the background after the first paint.
+      state.sources = parsed.map(s => ({ color: TYPE_COLOR[s.type] || '#64748b', ...s }));
+      setTimeout(() => {
+        for (const s of state.sources) buildSearchIndexAsync(s.tables || []);
+      }, 100);
     }
-  } catch(e) {}
+  } catch(e) {
+    // Corrupt/oversized storage — clear it so we don't crash-loop on every launch
+    try { localStorage.removeItem('uds_sources'); } catch(_) {}
+  }
 }
 
 // ═══════════════════════════════════════════════════════════

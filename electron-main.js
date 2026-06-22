@@ -7,6 +7,9 @@ const http = require('http');
 
 // Increase JS heap limit for large Excel imports
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096');
+// GPU acceleration causes black-screen/crash on some Windows setups; the UI
+// is a simple table view so software rendering is plenty fast.
+app.disableHardwareAcceleration();
 
 let server = null;
 let serverPort = 0;
