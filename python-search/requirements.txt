@@ -1,0 +1,4 @@
+pandas
+openpyxl
+# لدعم ملفات Access (.mdb/.accdb) على ويندوز، أزل علامة # من السطر التالي:
+# pyodbc

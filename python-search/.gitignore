@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*.udsidx
+*.udsidx-*
+uds_config.json
