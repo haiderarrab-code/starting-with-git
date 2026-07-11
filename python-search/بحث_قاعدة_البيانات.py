@@ -49,7 +49,11 @@ FOLDER_EXTS = EXCEL_EXTS + CSV_EXTS          # ما يُستورد من مجلد
 
 SEP = "\x01"                # فاصل داخلي بين قيم الأعمدة
 IDX_SUFFIX = ".udsidx"      # امتداد ملف الفهرس
-INDEX_VERSION = "2"         # عند تغيير بنية الفهرس يرتفع الرقم فيُعاد البناء
+# مُرمِّز الفهرس: 'trigram' = بحث جزئي في وسط الكلمة (أبطأ بناءً وأكبر حجماً)
+#               'unicode61' = بحث بالكلمة/بادئتها (بناء أسرع بكثير وحجم أصغر)
+TOKENIZER = "'unicode61 remove_diacritics 2'"
+IS_TRIGRAM = "trigram" in TOKENIZER
+INDEX_VERSION = "3"         # عند تغيير بنية الفهرس يرتفع الرقم فيُعاد البناء
 CONFIG_NAME = "uds_config.json"
 DATA_DIRS = ["قواعد الاكسل", "قواعد البيانات", "البيانات", "data"]
 
@@ -112,7 +116,7 @@ def list_data_files(folder):
 
 def fingerprint(source_path):
     """بصمة للمصدر تتغيّر عند أي إضافة/تعديل/حذف — لتحديد صلاحية الفهرس."""
-    items = [INDEX_VERSION]
+    items = [INDEX_VERSION, TOKENIZER]      # تغيير نوع الفهرس يفرض إعادة بناء
     try:
         if os.path.isdir(source_path):
             for fp in list_data_files(source_path):
@@ -137,6 +141,25 @@ def _cell(v):
 def _like_escape(q):
     """تهريب أحرف البدل في LIKE."""
     return q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _match_expr(q):
+    """يبني تعبير FTS5 MATCH من نص المستخدم.
+
+    trigram   → عبارة واحدة = بحث جزئي في أي موضع.
+    unicode61 → كل كلمة تُعامَل كبادئة (term*) وتُدمج بـ AND، فيبحث
+                من بداية الكلمات: «حي» يطابق «حيدر»، «عبد محس» يطابق
+                «عبد محسن».
+    """
+    q = (q or "").strip()
+    if not q:
+        return None
+    if IS_TRIGRAM:
+        return '"' + q.replace('"', '""') + '"'
+    terms = q.split()
+    if not terms:
+        return None
+    return " ".join('"' + t.replace('"', '""') + '"*' for t in terms)
 
 
 # ════════════════════════════════════════════════════════════════
@@ -192,14 +215,17 @@ class Engine:
             if os.path.exists(leftover):
                 os.remove(leftover)
         con = sqlite3.connect(tmp)
-        con.execute("PRAGMA journal_mode=WAL")
+        # إعدادات مضبوطة لبناء ضخم أسرع (ملف مؤقت — لا حاجة لأمان الأعطال)
+        con.execute("PRAGMA page_size=8192")
+        con.execute("PRAGMA journal_mode=OFF")
         con.execute("PRAGMA synchronous=OFF")
         con.execute("PRAGMA temp_store=MEMORY")
-        con.execute("PRAGMA cache_size=-65536")          # 64MB
+        con.execute("PRAGMA cache_size=-524288")         # 512MB
         con.execute("CREATE TABLE kv(k TEXT PRIMARY KEY, v TEXT)")
         con.execute("CREATE TABLE meta(source TEXT PRIMARY KEY, columns TEXT, nrows INT)")
         con.execute("CREATE TABLE docs(id INTEGER PRIMARY KEY, source TEXT, vals TEXT)")
-        con.execute("CREATE VIRTUAL TABLE fts USING fts5(content, content='', tokenize='trigram')")
+        con.execute(
+            f"CREATE VIRTUAL TABLE fts USING fts5(content, content='', tokenize={TOKENIZER})")
         rid = 0
         seen = {}
         try:
@@ -239,9 +265,8 @@ class Engine:
                     continue
                 if progress_cb:
                     progress_cb(source, rid)
-            if progress_cb:
-                progress_cb("ضغط الفهرس", rid)
-            con.execute("INSERT INTO fts(fts) VALUES('optimize')")
+            # ملاحظة: تجاوزنا خطوة optimize المكلفة عمداً — قياسنا أظهر أنها
+            # تُبطئ البناء دقائق عند عشرات الملايين دون تسريع ملموس للبحث.
             con.execute("INSERT INTO kv VALUES('fingerprint',?)", (fp,))
             con.execute("INSERT INTO kv VALUES('version',?)", (INDEX_VERSION,))
             con.commit()
@@ -270,14 +295,16 @@ class Engine:
 
     # ---- البحث ----
     def _where(self, name, q):
-        """يبني (sql_from_where, params) حسب نوع الاستعلام."""
-        if q and len(q) >= MIN_FAST_QUERY:
-            match = '"' + q.replace('"', '""') + '"'
+        """يبني (sql_from_where, params) حسب نوع الاستعلام والمُرمّز."""
+        expr = _match_expr(q)
+        # trigram لا يفهرس أقل من 3 أحرف → نلجأ لمسح LIKE؛ unicode61 يفهرس أي طول
+        trigram_short = IS_TRIGRAM and q and len(q) < MIN_FAST_QUERY
+        if expr and not trigram_short:
             base = "FROM fts JOIN docs d ON d.id = fts.rowid WHERE fts.content MATCH ?"
             if name == ALL_KEY:
-                return base, [match]
-            return base + " AND d.source = ?", [match, name]
-        if q:   # استعلام قصير: مسح LIKE (يُستدعى يدوياً بـ Enter)
+                return base, [expr]
+            return base + " AND d.source = ?", [expr, name]
+        if q:   # استعلام قصير مع trigram: مسح LIKE (يُستدعى يدوياً بـ Enter)
             like = "%" + _like_escape(q) + "%"
             base = "FROM docs d WHERE d.vals LIKE ? ESCAPE '\\'"
             if name == ALL_KEY:
@@ -533,7 +560,7 @@ class SearchApp(tk.Tk):
                               relief="flat", font=("Segoe UI", 13))
         self.entry.pack(side="right", fill="x", expand=True, ipady=7, padx=8)
         self._placeholder(self.entry,
-                          "اكتب كلمة للبحث في كل الأعمدة… (3 أحرف فأكثر للبحث الفوري)")
+                          "اكتب اسماً أو رقماً أو مدينة… (يبحث من بداية الكلمة — 3 أحرف فأكثر)")
         self.q_var.trace_add("write", lambda *a: self._debounced_search())
         self.entry.bind("<Return>", lambda e: self.run_search(force=True))
 
