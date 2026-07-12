@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import sqlite3
 import sys
 import threading
@@ -23,6 +24,31 @@ from tkinter import ttk, filedialog, messagebox
 from urllib.request import pathname2url
 
 import pandas as pd
+
+
+# ── تطبيع النص العربي للبحث (يُطبَّق على الفهرس والاستعلام معاً) ──
+#   يزيل التشكيل، ويوحّد الهمزات وأشكال الألف والتاء المربوطة والألف
+#   المقصورة، ويحوّل الأرقام العربية إلى لاتينية — فيصبح البحث عن
+#   «احمد» يجد «أحمد»، و«فاطمه» تجد «فاطمة».  النص الأصلي يبقى للعرض.
+_HARAKAT = re.compile(
+    "[\u0610-\u061A\u064B-\u065F\u0670"
+    "\u06D6-\u06DC\u06DF-\u06E4\u06E7\u06E8\u06EA-\u06ED"
+    "\u08E3-\u08FF]")
+_AR_MAP = str.maketrans({
+    "أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا", "ٲ": "ا", "ٳ": "ا",
+    "ؤ": "و", "ئ": "ي", "ء": "",
+    "ى": "ي", "ة": "ه", "ـ": "",
+    "٠": "0", "١": "1", "٢": "2", "٣": "3", "٤": "4",
+    "٥": "5", "٦": "6", "٧": "7", "٨": "8", "٩": "9",
+    "۰": "0", "۱": "1", "۲": "2", "۳": "3", "۴": "4",
+    "۵": "5", "۶": "6", "۷": "7", "۸": "8", "۹": "9",
+})
+
+
+def normalize_ar(s):
+    if not s:
+        return s
+    return _HARAKAT.sub("", s).translate(_AR_MAP)
 
 
 def ro_connect(path):
@@ -51,9 +77,10 @@ SEP = "\x01"                # فاصل داخلي بين قيم الأعمدة
 IDX_SUFFIX = ".udsidx"      # امتداد ملف الفهرس
 # مُرمِّز الفهرس: 'trigram' = بحث جزئي في وسط الكلمة (أبطأ بناءً وأكبر حجماً)
 #               'unicode61' = بحث بالكلمة/بادئتها (بناء أسرع بكثير وحجم أصغر)
+# التطبيع العربي يتم في بايثون (normalize_ar)؛ لذا يكفي unicode61 البسيط.
 TOKENIZER = "'unicode61 remove_diacritics 2'"
 IS_TRIGRAM = "trigram" in TOKENIZER
-INDEX_VERSION = "3"         # عند تغيير بنية الفهرس يرتفع الرقم فيُعاد البناء
+INDEX_VERSION = "4"         # عند تغيير بنية الفهرس يرتفع الرقم فيُعاد البناء
 CONFIG_NAME = "uds_config.json"
 DATA_DIRS = ["قواعد الاكسل", "قواعد البيانات", "البيانات", "data"]
 
@@ -151,7 +178,7 @@ def _match_expr(q):
                 من بداية الكلمات: «حي» يطابق «حيدر»، «عبد محس» يطابق
                 «عبد محسن».
     """
-    q = (q or "").strip()
+    q = normalize_ar((q or "").strip())   # نفس تطبيع الفهرس
     if not q:
         return None
     if IS_TRIGRAM:
@@ -228,6 +255,7 @@ class Engine:
             f"CREATE VIRTUAL TABLE fts USING fts5(content, content='', tokenize={TOKENIZER})")
         rid = 0
         seen = {}
+        had_failure = False
         try:
             for source, columns, rowiter in sources_iter:
                 # تمييز الأسماء المكررة
@@ -243,8 +271,8 @@ class Engine:
                         rid += 1
                         n += 1
                         s = SEP.join(_cell(v) for v in values)
-                        dbatch.append((rid, source, s))
-                        fbatch.append((rid, s))
+                        dbatch.append((rid, source, s))          # الأصل للعرض
+                        fbatch.append((rid, normalize_ar(s)))    # المطبَّع للبحث
                         if len(dbatch) >= 20000:
                             con.executemany("INSERT INTO docs VALUES(?,?,?)", dbatch)
                             con.executemany("INSERT INTO fts(rowid,content) VALUES(?,?)", fbatch)
@@ -260,11 +288,19 @@ class Engine:
                 except Exception as e:
                     # مصدر تالف أثناء القراءة: تجاهل صفوفه غير المثبّتة وتابع
                     con.rollback()
+                    had_failure = True
                     if source_errors is not None:
                         source_errors.append(f"{source}: {e}")
                     continue
                 if progress_cb:
                     progress_cb(source, rid)
+            # ضمان نظافة: احذف أي صفوف يتيمة لمصدر فشل (rollback قد لا يضمن
+            # التراجع عند journal_mode=OFF لو تجاوزت المعاملة الذاكرة المؤقتة).
+            # صفوف fts اليتيمة غير ضارّة لأن الربط الداخلي مع docs يستبعدها.
+            if had_failure:
+                con.execute(
+                    "DELETE FROM docs WHERE source NOT IN (SELECT source FROM meta)")
+                con.commit()
             # ملاحظة: تجاوزنا خطوة optimize المكلفة عمداً — قياسنا أظهر أنها
             # تُبطئ البناء دقائق عند عشرات الملايين دون تسريع ملموس للبحث.
             con.execute("INSERT INTO kv VALUES('fingerprint',?)", (fp,))
@@ -495,7 +531,6 @@ class SearchApp(tk.Tk):
                 if kind == "results":
                     gen, name, q, cols, rows, total, capped = payload
                     if gen == self._gen:
-                        self._last_query = (name, q)
                         self._render(cols, rows, total, q, name, capped)
                 elif kind == "status":
                     self.status.config(text=payload)
@@ -552,7 +587,7 @@ class SearchApp(tk.Tk):
         self.table_cb = ttk.Combobox(bar, textvariable=self.table_var,
                                      state="readonly", width=26)
         self.table_cb.pack(side="right", padx=8)
-        self.table_cb.bind("<<ComboboxSelected>>", lambda e: self.run_search())
+        self.table_cb.bind("<<ComboboxSelected>>", lambda e: self.run_search(force=True))
 
         self.q_var = tk.StringVar()
         self.entry = tk.Entry(bar, textvariable=self.q_var, bg="#1e293b",
@@ -771,7 +806,8 @@ class SearchApp(tk.Tk):
             return
         if self._search_job:
             self.after_cancel(self._search_job)
-        self._search_job = self.after(160, self.run_search)
+        # بحث الكتابة الحيّة فقط يُقيَّد بطول أدنى (لتفادي بادئة قصيرة مكلفة)
+        self._search_job = self.after(180, lambda: self.run_search(force=False))
 
     def run_search(self, force=False):
         # إلغاء أي بحث مؤجَّل معلّق (Enter لا يُنتج بحثاً مكرراً)
@@ -781,13 +817,17 @@ class SearchApp(tk.Tk):
         self._gen += 1                    # أي بحث سابق قيد التنفيذ يُصبح ملغى
         if not self.engine or self._indexing:
             return
-        q = self._query_text()
-        if q and len(q) < MIN_FAST_QUERY and not force:
-            # الاستعلام القصير يتطلب مسحاً كاملاً — لا يعمل تلقائياً مع كل حرف
-            self.status.config(
-                text=f"أكمل إلى {MIN_FAST_QUERY} أحرف للبحث الفوري — أو اضغط Enter للبحث الدقيق")
-            return
         name = self.table_var.get()
+        q = self._query_text()
+        self._last_query = (name, q)      # المصدر الوحيد لآخر استعلام مطلوب
+        # القيد يسري فقط على الكتابة الحيّة؛ التبديل/Enter يُنفّذ أي طول
+        if q and len(q) < MIN_FAST_QUERY and not force:
+            self.tree.delete(*self.tree.get_children())
+            self.tree["columns"] = ()
+            self.watermark.place(relx=0.5, rely=0.5, anchor="center")
+            self.status.config(
+                text=f"أكمل إلى {MIN_FAST_QUERY} أحرف، أو اضغط Enter للبحث الآن")
+            return
         self.status.config(text="جارٍ البحث…")
         threading.Thread(target=self._do_search,
                          args=(self._gen, name, q), daemon=True).start()
@@ -885,9 +925,8 @@ class SearchApp(tk.Tk):
             initialfile="نتائج_البحث.xlsx")
         if not path:
             return
-        name, q = self.table_var.get(), self._query_text()
-        if q and len(q) < MIN_FAST_QUERY:
-            name, q = self._last_query   # صدّر آخر بحث مكتمل فعلاً
+        # يُصدَّر ما يطابق آخر استعلام معروض فعلاً (نفس المصدر ونفس الكلمة)
+        name, q = self._last_query
         self._busy = True
         self.status.config(text="جارٍ تجهيز ملف التصدير…")
         threading.Thread(target=self._do_export,
@@ -943,16 +982,17 @@ def _clip(v, n=120):
 
 
 def main():
+    # تحقّق من دعم المُرمّز الفعلي المستخدَم (لا نفترض trigram)
     try:
         con = sqlite3.connect(":memory:")
-        con.execute("CREATE VIRTUAL TABLE _t USING fts5(x, tokenize='trigram')")
+        con.execute(f"CREATE VIRTUAL TABLE _t USING fts5(x, tokenize={TOKENIZER})")
         con.close()
     except sqlite3.OperationalError:
         root = tk.Tk()
         root.withdraw()
         messagebox.showerror(
             "غير مدعوم",
-            "نسخة SQLite في Python لديك لا تدعم FTS5/trigram.\n"
+            "نسخة SQLite في Python لديك لا تدعم FTS5.\n"
             "ثبّت Python 3.11 أو أحدث من python.org.")
         raise SystemExit(1)
     SearchApp().mainloop()
