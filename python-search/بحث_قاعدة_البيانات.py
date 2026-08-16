@@ -891,6 +891,16 @@ class SearchApp(tk.Tk):
                 self._queue.put(("status", "تعذّر البحث: " + str(e)))
 
     def _render(self, cols, rows, total, q, name, capped=False):
+        # أخفِ الأعمدة الفارغة تماماً في النتائج المعروضة حتى تظهر فقط
+        # الأعمدة التي تحوي معلومات — يقلّل التشويش خاصة في البحث الشامل.
+        hidden = 0
+        if rows and cols:
+            keep = [i for i in range(len(cols))
+                    if any(i < len(r) and r[i] not in ("", None) for r in rows)]
+            if keep and len(keep) < len(cols):
+                hidden = len(cols) - len(keep)
+                cols = [cols[i] for i in keep]
+                rows = [[r[i] if i < len(r) else "" for i in keep] for r in rows]
         self.tree.delete(*self.tree.get_children())
         self.tree["columns"] = cols
         for c in cols:
@@ -906,7 +916,9 @@ class SearchApp(tk.Tk):
         count_txt = f"أكثر من {total:,}" if capped else f"{total:,}"
         extra = f" (معروض أول {PAGE:,})" if total > PAGE else ""
         qtxt = f' للبحث عن "{q}"' if q else ""
-        self.status.config(text=f"المصدر «{name}» — {count_txt} نتيجة{extra}{qtxt}")
+        hint = f" — أُخفيت {hidden} أعمدة فارغة" if hidden else ""
+        self.status.config(
+            text=f"المصدر «{name}» — {count_txt} نتيجة{extra}{qtxt}{hint}")
 
     # ── التصدير ──────────────────────────────────────────────────
     def export_results(self):
